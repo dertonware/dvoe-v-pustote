@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { hullTextures, panelTextures, floorTextures, makePlanetTex, makeMoonTex, makeRings } from './fx.js';
 import { buildHullModel } from './shipmodel.js';
+import { makeAirlockDoor, makePilotSeat, makeTerminal, makePlant, makeCrate } from './props.js';
 
 // ---------- общие материалы ----------
 const std = (color, o = {}) => new THREE.MeshStandardMaterial(Object.assign({ color, roughness: 0.72, metalness: 0.04 }, o));
@@ -87,31 +88,39 @@ export const WALK = [
   [-1.85, 1.85, -8.5, -5.35], [-0.75, 0.75, -5.8, -1.0], [-2.65, 2.65, -1.15, 3.15], [-0.75, 0.75, 2.8, 6.5],
   [-2.65, 2.65, 6.35, 10.15], [2.4, 4.75, 0.5, 1.5], [-4.75, -2.4, 0.5, 1.5], [2.4, 4.2, 7.6, 8.4], [-4.2, -2.4, 7.6, 8.4],
 ];
-export const WALK_DOCK = [[4.0, 5.8, 7.6, 8.4], [-5.8, -4.0, 7.6, 8.4], [4.85, 13.9, 3.35, 12.65], [-13.9, -4.85, 3.35, 12.65]];
-export const OBST = [[0, 1, 0.75], [0, 10.1, 0.95], [0, -7.75, 0.5]];
+export const WALK_HALLS = [[4.85, 14.6, 3.35, 12.65], [-14.6, -4.85, 3.35, 12.65]];
+export const WALK_DOOR = [[-5.8, -4.0, 7.6, 8.4], [4.0, 5.8, 7.6, 8.4]]; // [левый, правый]
+export const OBST = [[0, 1, 0.75], [0, 10.1, 0.95], [0, -7.75, 0.5], [-10, 3.6, 0.6], [-10, 12.4, 0.6], [10, 3.6, 0.6], [10, 12.4, 0.6], [13.4, 7, 0.5], [-13.4, 7, 0.5], [13.4, 8, 0.5], [-13.4, 8, 0.5], [13.4, 9, 0.5], [-13.4, 9, 0.5]];
 export const SEATS = {
   pilot: { p: [0, 0, -7.75], cam: [0, 1.5, -7.95], yaw: 0, label: 'сесть за штурвал' },
   tl: { p: [-5.15, 0, 1], cam: [-5.05, 1.38, 1], yaw: Math.PI / 2, label: 'сесть за левую турель' },
   tr: { p: [5.15, 0, 1], cam: [5.05, 1.38, 1], yaw: -Math.PI / 2, label: 'сесть за правую турель' },
 };
 export const TERMINALS = [
-  { id: 'shop', p: [-13.6, 0, 5.5], label: 'Магазин улучшений', side: -1 },
-  { id: 'repair', p: [-13.6, 0, 10.5], label: 'Ремонтный док', side: -1 },
-  { id: 'missions', p: [13.6, 0, 5.5], label: 'Терминал миссий', side: 1 },
-  { id: 'med', p: [13.6, 0, 10.5], label: 'Медотсек', side: 1 },
+  { id: 'shop', p: [-10, 0, 3.6], label: 'Магазин улучшений' },
+  { id: 'repair', p: [-10, 0, 12.4], label: 'Ремонтный док' },
+  { id: 'missions', p: [10, 0, 3.6], label: 'Терминал миссий' },
+  { id: 'med', p: [10, 0, 12.4], label: 'Медотсек' },
 ];
 export const FIRE_SLOTS = [[0, 0, -8.2], [1.4, 0, -6.2], [0, 0, -3.2], [-2.2, 0, -0.6], [2.2, 0, 2.6], [0, 0, 1], [0, 0, 4.8], [-2.1, 0, 7.2], [2.1, 0, 9.6], [0, 0, 9.2]];
 export const DOCK_P = new THREE.Vector3(0, 0, 230), DOCK_APPROACH = new THREE.Vector3(0, 0, 265);
 
 function canvasTex(w, h, draw) { const c = document.createElement('canvas'); c.width = w; c.height = h; draw(c.getContext('2d'), w, h); const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t; }
 export function textSprite(text, color = '#fff', scale = 1) {
-  const tex = canvasTex(512, 128, (x, w, h) => {
-    x.font = '700 54px Unbounded, Rubik, sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle';
-    const tw = x.measureText(text).width + 50; x.fillStyle = 'rgba(12,12,28,.65)';
-    x.beginPath(); x.roundRect((w - tw) / 2, 18, tw, 92, 30); x.fill(); x.fillStyle = color; x.fillText(text, w / 2, h / 2 + 2);
-  });
-  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: true, transparent: true }));
-  s.scale.set(2 * scale, 0.5 * scale, 1); return s;
+  const c = document.createElement('canvas'), x = c.getContext('2d');
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 8;
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: true, transparent: true, color: 0xd8d8d8 }));
+  const draw = () => {
+    const font = '800 64px Unbounded, Rubik, Arial, sans-serif'; x.font = font;
+    const tw = Math.ceil(x.measureText(text).width) + 80; c.width = tw; c.height = 120;
+    x.font = font; x.textAlign = 'center'; x.textBaseline = 'middle';
+    x.fillStyle = 'rgba(10,10,24,.72)'; x.beginPath(); x.roundRect(4, 8, tw - 8, 104, 30); x.fill();
+    x.strokeStyle = color; x.globalAlpha = 0.5; x.lineWidth = 3; x.stroke(); x.globalAlpha = 1;
+    x.fillStyle = color; x.fillText(text, tw / 2, 63);
+    tex.needsUpdate = true; s.scale.set(0.5 * scale * tw / 120, 0.5 * scale, 1);
+  };
+  draw(); if (document.fonts) document.fonts.ready.then(draw);
+  return s;
 }
 function screenTex(color, kind) {
   return canvasTex(256, 160, (x, w, h) => {
@@ -133,7 +142,7 @@ export function buildShip() {
   // Кабина
   room(I, -2.2, 2.2, -9.5, -5, { s: [[-1.1, 1.1]] }, { noCeil: true, h: { n: 0.55, w: 0.8, e: 0.8 } });
   const canopy = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 20, 0, Math.PI * 2, 0, Math.PI / 2), MAT.glass);
-  canopy.scale.set(2.35, 2.25, 3.1); canopy.position.set(0, 0.95, -6.6); I.add(canopy);
+  canopy.scale.set(2.35, 2.25, 2.2); canopy.position.set(0, 0.95, -7.2); I.add(canopy);
   rbox(I, 4.4, 0.25, 0.5, 0.1, MAT.hullD, 0, 2.95, -5.1); // дуга
   // приборная панель
   const dash = rbox(I, 3.6, 0.45, 0.8, 0.18, MAT.hullD, 0, 0.62, -9.05); dash.rotation.x = -0.35;
@@ -141,8 +150,8 @@ export function buildShip() {
   const btnM = [0xff8a3d, 0x5ff6ff, 0x7dffb0, 0xff3b4f].map(c => new THREE.MeshStandardMaterial({ color: c, emissive: c, emissiveIntensity: 0.6 }));
   for (let i = 0; i < 10; i++) sph(I, 0.022, btnM[i % 4], -1.45 + i * 0.32, 0.78, -8.55, 8);
   // кресло пилота
-  rbox(I, 0.9, 0.25, 0.85, 0.12, MAT.seat, 0, 0.5, -7.6); rbox(I, 0.9, 1.05, 0.22, 0.12, MAT.seat, 0, 1.0, -7.15);
-  cyl(I, 0.12, 0.18, 0.45, MAT.hullD, 0, 0.22, -7.6); rbox(I, 0.18, 0.5, 0.18, 0.06, MAT.hullD, 0.38, 0.75, -8.05);
+  const pseat = makePilotSeat(); pseat.position.set(0, 0, -7.55); I.add(pseat);
+  rbox(I, 0.18, 0.5, 0.18, 0.06, MAT.hullD, 0.38, 0.75, -8.05);
   const stickTop = sph(I, 0.08, MAT.orange, 0.38, 1.02, -8.05, 10);
   // рычаг тяги слева от пилота
   rbox(I, 0.22, 0.35, 0.5, 0.06, MAT.hullD, -0.42, 0.62, -7.9);
@@ -200,17 +209,13 @@ export function buildShip() {
     rbox(I, 0.8, 0.8, 0.8, 0.12, MAT.hullO, sx * 2.3, 0.4, 6.6); rbox(I, 0.6, 0.6, 0.6, 0.1, MAT.wallL, sx * 2.3, 1.1, 6.6);
     cyl(I, 0.1, 0.1, 3.5, MAT.metal, sx * 2.7, 2.3, 8.2).rotation.x = Math.PI / 2;
   }
-  // шлюзы
-  const outerDoors = [];
+  // шлюзы: тамбур + герметичная дверь с двумя створками, маячками и паром
+  const doors = [];
   for (const sx of [-1, 1]) {
     const x0 = sx < 0 ? -4.5 : 3, x1 = sx < 0 ? -3 : 4.5;
     room(I, x0, x1, 7.2, 8.8, {}, { skip: ['w', 'e'] });
     rbox(I, 0.08, 0.08, 1.6, 0.03, MAT.yellow, sx * 3.75, H - 0.12, 8);
-    const door = new THREE.Group(); door.position.set(sx * 4.5, 0, 8); I.add(door);
-    const pan = rbox(door, 0.18, H, 1.62, 0.07, MAT.hullO, 0, H / 2, 0);
-    for (let k = 0; k < 4; k++) rbox(door, 0.2, 0.12, 1.5, 0.04, MAT.dark, 0, 0.5 + k * 0.6, 0).rotation.x = 0;
-    sph(door, 0.08, MAT.red, sx * -0.12, 1.6, 0.5, 8);
-    pan.userData.sx = sx; outerDoors.push(door);
+    const d = makeAirlockDoor(sx); I.add(d.g); doors.push(d);
   }
 
   // Свет внутри
@@ -226,30 +231,40 @@ export function buildShip() {
 
   // ---------- Залы станции (видны только при стыковке) ----------
   const halls = new THREE.Group(); I.add(halls);
-  const hallLights = [];
-  const hallMat = std(0x7d7195), hallFloor = std(0x3a3346, { roughness: 0.9 });
-  room(halls, -15, -4.5, 3, 13, { e: [[7.2, 8.8]] }, { wall: hallMat, floor: hallFloor, strip: MAT.orange });
-  room(halls, 4.5, 15, 3, 13, { w: [[7.2, 8.8]] }, { wall: hallMat, floor: hallFloor, strip: MAT.teal });
-  const termMeshes = {};
-  for (const t of TERMINALS) {
-    const g = new THREE.Group(); g.position.set(t.p[0], 0, t.p[2]); halls.add(g);
-    rbox(g, 0.9, 1.2, 1.6, 0.25, MAT.hullD, t.side * 0.35, 0.6, 0);
-    const scr = rbox(g, 0.12, 0.9, 1.3, 0.05, new THREE.MeshStandardMaterial({ color: 0x0b1820, emissive: t.id === 'shop' ? 0xff8a3d : t.id === 'missions' ? 0x5ff6ff : t.id === 'med' ? 0x7dffb0 : 0xffd05f, emissiveIntensity: 0.55, roughness: 0.3 }), t.side * -0.1, 1.55, 0);
-    scr.rotation.z = t.side * 0.25;
-    const lab = textSprite(t.label, '#fff', 1.2); lab.position.set(t.side * -0.3, 2.45, 0); g.add(lab);
-    termMeshes[t.id] = g;
-  }
-  // декор: ящики, растения-шарики, окна-иллюминаторы
+  const hallLights = [], terminals = {};
+  const HW = panelTextures('#6f6a86');
+  const hallMat = std(0xffffff, { map: HW.map, bumpMap: HW.bump, bumpScale: 1.5 });
+  const hallFloor = std(0xffffff, { map: FT.map, bumpMap: FT.bump, bumpScale: 2, roughness: 0.55, metalness: 0.45 });
+  const hallGlass = new THREE.MeshPhysicalMaterial({ color: 0xbfe8ff, transparent: true, opacity: 0.07, roughness: 0, metalness: 0.2, side: THREE.DoubleSide, depthWrite: false });
+  const lampPanel = new THREE.MeshStandardMaterial({ color: 0xfff4e6, emissive: 0xfff0dc, emissiveIntensity: 0.85 });
   for (const sx of [-1, 1]) {
-    for (let i = 0; i < 4; i++) rbox(halls, 0.9, 0.9, 0.9, 0.15, i % 2 ? MAT.hullO : MAT.wallL, sx * (6 + i * 1.1), 0.45, 12.2);
-    rbox(halls, 0.9, 0.9, 0.9, 0.15, MAT.hullO, sx * 6.5, 1.35, 12.2);
-    for (const z of [4.2, 11.8]) { cyl(halls, 0.35, 0.28, 0.6, MAT.hullD, sx * 12.5, 0.3, z); sph(halls, 0.55, std(0x6fd38f), sx * 12.5, 0.95, z, 14); sph(halls, 0.35, std(0x8fe8a8), sx * 12.3, 1.35, z - 0.2, 12); }
-    const sign = textSprite(sx < 0 ? '◆ ТОРГОВОЕ КРЫЛО' : 'ЦЕНТР МИССИЙ ◆', sx < 0 ? '#ffb067' : '#5ff6ff', 2.2); sign.position.set(sx * 9.7, 2.4, 3.3); halls.add(sign);
-    const hl = new THREE.PointLight(sx < 0 ? 0xffc890 : 0xa0e8ff, 0, 16, 1.5); hl.position.set(sx * 9.7, 2.5, 8); I.add(hl); hallLights.push(hl);
+    const x0 = sx < 0 ? -15 : 4.5, x1 = sx < 0 ? -4.5 : 15, far = sx < 0 ? 'w' : 'e', near = sx < 0 ? 'e' : 'w';
+    room(halls, x0, x1, 3, 13, { [near]: [[7.2, 8.8]] }, { wall: hallMat, floor: hallFloor, strip: sx < 0 ? MAT.orange : MAT.teal, skip: [far] });
+    // дальняя стена — панорамное окно в космос
+    const fx = sx * 15;
+    tileBox(T, 0.9, 10, 0.05, hallMat, halls, fx, 0.45, 8); tileBox(T, 0.5, 10, 0.05, hallMat, halls, fx, 2.55, 8);
+    tileBox(T, 1.4, 1.0, 0.05, hallMat, halls, fx, 1.6, 3.5); tileBox(T, 1.4, 1.0, 0.05, hallMat, halls, fx, 1.6, 12.5);
+    const gl = new THREE.Mesh(new THREE.PlaneGeometry(8, 1.4), hallGlass); gl.position.set(fx, 1.6, 8); gl.rotation.y = Math.PI / 2; halls.add(gl);
+    for (let z = 4; z <= 12.01; z += 2) rbox(halls, 0.16, 1.45, 0.1, 0.03, MAT.hullD, fx - sx * 0.02, 1.6, z);
+    rbox(halls, 0.2, 0.08, 8, 0.03, sx < 0 ? MAT.orange : MAT.teal, fx - sx * 0.1, 0.92, 8);
+    // скамья у окна
+    rbox(halls, 0.7, 0.12, 3.2, 0.05, MAT.seat, sx * 13.4, 0.48, 8); for (const z of [6.8, 9.2]) rbox(halls, 0.5, 0.42, 0.12, 0.04, MAT.hullD, sx * 13.4, 0.21, z);
+    // потолочные световые панели
+    for (const z of [5, 8, 11]) for (const x of [7.5, 11.5]) rbox(halls, 1.6, 0.05, 0.9, 0.02, lampPanel, sx * x, H - 0.03, z);
+    // терминалы у боковых стен (экраны читаются)
+    const defs = sx < 0 ? [['shop', 'Магазин улучшений', 'Пушки, броня, щиты, ракеты', '#ffb067', 3.6, Math.PI], ['repair', 'Ремонтный док', 'Корпус и пожары', '#ffd05f', 12.4, 0]]
+      : [['missions', 'Терминал миссий', 'Контракты сектора', '#5ff6ff', 3.6, Math.PI], ['med', 'Медотсек', 'Лечение экипажа бесплатно', '#7dffb0', 12.4, 0]];
+    for (const [id, title, sub, col, z, rot] of defs) { const t = makeTerminal(id, title, sub, col); t.g.position.set(sx * 10, 0, z); t.g.rotation.y = rot; halls.add(t.g); terminals[id] = t; }
+    // растения и груз
+    for (const [x, z, k] of [[5.4, 3.7, 1], [5.4, 12.3, 2], [14.2, 3.7, 3], [14.2, 12.3, 4]]) { const p = makePlant(k + (sx > 0 ? 5 : 0)); p.position.set(sx * x, 0, z); halls.add(p); }
+    for (const [x, z, sz, y] of [[7.2, 12.2, 0.9, 0], [8.2, 12.25, 0.75, 0], [7.4, 12.2, 0.7, 0.9]]) { const c = makeCrate(sz); c.position.set(sx * x, y, z); c.rotation.y = x * 0.3; halls.add(c); }
+    const sign = textSprite(sx < 0 ? '◆ ТОРГОВОЕ КРЫЛО' : 'ЦЕНТР МИССИЙ ◆', sx < 0 ? '#ffb067' : '#5ff6ff', 1.4); sign.position.set(sx * 13.9, 2.45, 8); halls.add(sign);
+    const sd = textSprite('ШЛЮЗ · DV-07', '#ffd05f', 0.8); sd.position.set(sx * 4.8, 2.65, 8); halls.add(sd);
+    const hl = new THREE.PointLight(sx < 0 ? 0xffd2a0 : 0xbfe8ff, 0, 18, 1.4); hl.position.set(sx * 9.7, 2.5, 8); I.add(hl); hallLights.push(hl);
   }
   halls.visible = false;
 
-  return { group: ship, inner, hull, holo, holoCone, reactor, lights, alarm, turretGuns, turretSeats, outerDoors, halls, stickTop, throttle, strobes: model.strobes, nozzles: model.nozzles, rcs: model.rcs, hallLights, fireLights };
+  return { group: ship, inner, hull, holo, holoCone, reactor, lights, alarm, turretGuns, turretSeats, doors, terminals, halls, stickTop, throttle, strobes: model.strobes, nozzles: model.nozzles, rcs: model.rcs, hallLights, fireLights };
 }
 
 // ---------- СТАНЦИЯ ----------
@@ -425,17 +440,3 @@ export function makeAvatar(name, suitColor = 0xff8a3d) {
   return api;
 }
 
-// ---------- руки от первого лица ----------
-export function makeViewModel() {
-  const g = new THREE.Group();
-  const glove = std(0xf2ece2, { roughness: 0.5 }), suit = std(0xff8a3d);
-  const r = new THREE.Group(); r.position.set(0.32, -0.32, -0.55); g.add(r);
-  capsule(r, 0.08, 0.35, suit, 0.05, -0.05, 0.25).rotation.x = Math.PI / 2 - 0.25;
-  sph(r, 0.1, glove, 0, 0, 0, 12);
-  rbox(r, 0.14, 0.15, 0.42, 0.05, MAT.hullO, 0, 0.07, -0.12); rbox(r, 0.1, 0.1, 0.2, 0.04, MAT.hullD, 0, 0.07, -0.38);
-  const tip = sph(r, 0.055, MAT.teal, 0, 0.07, -0.49, 10);
-  const l = new THREE.Group(); l.position.set(-0.36, -0.36, -0.5); g.add(l);
-  capsule(l, 0.08, 0.35, suit, -0.04, -0.05, 0.25).rotation.x = Math.PI / 2 - 0.25;
-  sph(l, 0.1, glove, 0, 0, 0, 12);
-  return { group: g, r, l, tip };
-}

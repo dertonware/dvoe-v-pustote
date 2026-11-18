@@ -53,6 +53,9 @@ export const sfx = {
   fixed() { if (!ok()) return; const t = ctx.currentTime; [700, 1050].forEach((f, i) => osc('sine', f, t + i * 0.08, 0.15, 0.1)); },
   down() { if (!ok()) return; const t = ctx.currentTime; osc('sine', 400, t, 1.2, 0.2, 60); },
   revive() { if (!ok()) return; const t = ctx.currentTime; [392, 523, 659, 784].forEach((f, i) => osc('triangle', f, t + i * 0.09, 0.25, 0.12)); },
+  airHiss(distF = 1) { if (!ok()) return; const t = ctx.currentTime; const v = 0.35 * distF; if (v < 0.01) return; noise(t, 1.0, v, 6000, 0.8, 'highpass', null, 1500); noise(t + 0.05, 0.9, v * 0.6, 900, 2, 'bandpass', null, 300); osc('sine', 1600, t, 0.12, v * 0.2, 1200); },
+  doorMotor(distF = 1) { if (!ok()) return; const t = ctx.currentTime; const v = 0.2 * distF; if (v < 0.01) return; osc('sawtooth', 70, t, 0.9, v * 0.6, 110); osc('square', 140, t, 0.9, v * 0.12, 220); noise(t, 0.9, v * 0.4, 500, 3, 'bandpass'); },
+  clunk(distF = 1) { if (!ok()) return; const t = ctx.currentTime; const v = 0.5 * distF; if (v < 0.01) return; osc('sine', 90, t, 0.35, v, 40); noise(t, 0.12, v * 0.6, 1200, 1, 'lowpass', null, 200); osc('triangle', 600, t, 0.05, v * 0.15, 300); },
   done() { if (!ok()) return; const t = ctx.currentTime; [523, 659, 784, 1046].forEach((f, i) => osc('square', f, t + i * 0.12, 0.3, 0.06)); },
 };
 

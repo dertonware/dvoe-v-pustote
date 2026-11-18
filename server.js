@@ -86,6 +86,7 @@ function newGame() {
     enemies: [], ep: [], loot: [], fires: [],
     station: { hp: 1500, hm: 1500 },
     mission: null, offers: [], waveT: 0,
+    doors: [false, false], // шлюзы: [левый, правый]
   };
   S.offers = makeOffers(1);
   for (const p of players.values()) resetPlayer(p);
@@ -380,6 +381,7 @@ function slerp(a, b, t) {
   return a.map((x, i) => x * wa + b[i] * wb);
 }
 function onDocked() {
+  S.doors = [false, false];
   toast('Стыковка завершена. Добро пожаловать на станцию «Улей-7»', 'blue');
   for (const p of players.values()) if (p.dead) { resetPlayer(p); p.pos = [0, 0, 8]; toast(p.name + ' снова в строю', 'green'); }
   S.enemies = S.enemies.filter(e => e.type === 'ne' || e.type === 'bo');
@@ -415,15 +417,18 @@ function snapshot() {
     cr: S.credits, sec: S.sector, kills: S.kills,
     mi: S.mission ? { type: S.mission.type, label: S.mission.label, goal: S.mission.goal, prog: Math.floor(S.mission.prog), done: S.mission.done ? 1 : 0, act: S.mission.active ? 1 : 0, marks: S.mission.type === 'nests' ? S.enemies.filter(e => e.type === 'ne').map(e => r3(e.p)) : null } : null,
     of: S.offers, st: { hp: Math.round(S.station.hp), hm: S.station.hm }, up: S.up,
-    ev: events,
+    dr: S.doors.map(b => b ? 1 : 0), ev: events,
   };
 }
 
 // ---------- networking ----------
 function send(ws, o) { if (ws.readyState === 1) ws.send(JSON.stringify(o)); }
 function bcast(o, except) { const s = JSON.stringify(o); for (const p of players.values()) if (p.ws !== except && p.ws.readyState === 1) p.ws.send(s); }
+// хост — тот, кто зашёл первым (Map хранит порядок входа); если он ушёл — хостом становится следующий
+const hostP = () => players.values().next().value;
 function lobbyInfo() {
-  return { t: 'lobby', phase, url: publicUrl, lan: lanUrls(), players: [...players.values()].map(p => ({ id: p.id, n: p.name, r: p.ready ? 1 : 0, host: p.isHost ? 1 : 0 })) };
+  const h = hostP();
+  return { t: 'lobby', phase, url: publicUrl, lan: lanUrls(), hostId: h ? h.id : null, players: [...players.values()].map(p => ({ id: p.id, n: p.name, r: p.ready ? 1 : 0, host: p === h ? 1 : 0 })) };
 }
 const broadcastLobby = () => bcast(lobbyInfo());
 
@@ -452,7 +457,8 @@ function handle(p, m) {
     case 'ready': p.ready = !!m.v; broadcastLobby(); break;
     case 'start':
       if (phase === 'game') return;
-      if (![...players.values()].every(x => x.ready || x === p)) { send(p.ws, { t: 'toast', m: 'Не все готовы', c: 'red' }); return; }
+      if (p !== hostP()) { send(p.ws, { t: 'toast', m: 'Запускает только хост', c: 'red' }); return; }
+      if (![...players.values()].every(x => x.ready)) { send(p.ws, { t: 'toast', m: 'Не все нажали «Готов»', c: 'red' }); return; }
       newGame(); phase = 'game'; bcast({ t: 'start' }); broadcastLobby(); break;
     case 'tolobby': if (phase === 'over') { phase = 'lobby'; S = null; } broadcastLobby(); send(p.ws, { t: 'lobbyback' }); break;
     case 'chat': bcast({ t: 'toast', m: p.name + ': ' + String(m.m).slice(0, 80), c: 'chat' }); break;
@@ -497,11 +503,21 @@ function handle(p, m) {
     case 'undock':
       if (p.seat === 'pilot' && sh.docked) {
         if (!S.mission) { send(p.ws, { t: 'toast', m: 'Сначала возьмите миссию в терминале (правое крыло)', c: 'red' }); return; }
-        for (const o of players.values()) if (Math.abs(o.pos[0]) > 5.4) { send(p.ws, { t: 'toast', m: 'Напарник ещё на станции!', c: 'red' }); return; }
+        if (S.doors.some(Boolean)) { send(p.ws, { t: 'toast', m: 'Закройте шлюзы перед отстыковкой!', c: 'red' }); return; }
+        for (const o of players.values()) if (Math.abs(o.pos[0]) > 4.25 && Math.abs(o.pos[2] - 8) < 5) { send(p.ws, { t: 'toast', m: 'Напарник ещё на станции!', c: 'red' }); return; }
         sh.docked = false; sh.p = DOCK_P.slice(); sh.q = [0, 1, 0, 0]; sh.v = [0, 0, 35];
         activateMission();
       }
       break;
+    case 'door': {
+      const i = m.i ? 1 : 0;
+      if (!sh.docked) { send(p.ws, { t: 'toast', m: 'Шлюз заблокирован: за бортом вакуум', c: 'red' }); return; }
+      if (S.doors[i]) { // нельзя закрыть, если кто-то стоит в проёме
+        for (const o of players.values()) if (Math.abs(o.pos[0]) > 4.2 && Math.abs(o.pos[0]) < 5.0 && Math.abs(o.pos[2] - 8) < 1) { send(p.ws, { t: 'toast', m: 'В проёме кто-то стоит', c: 'red' }); return; }
+      }
+      S.doors[i] = !S.doors[i]; ev({ k: 'door', i, o: S.doors[i] ? 1 : 0 });
+      break;
+    }
     case 'buy': {
       const k = m.k; if (!sh.docked || !SHOP[k]) return;
       const lvl = S.up[k]; if (lvl >= SHOP[k].max) return;
