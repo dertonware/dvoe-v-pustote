@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Двое в Пустоте</title>
+<script>
+// открыли файл двойным кликом — игра работает только через сервер
+if (location.protocol === 'file:') location.replace('http://localhost:3000/');
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500;700;900&family=Rubik:wght@400;500;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<script type="importmap">{"imports":{"three":"/three/build/three.module.min.js","three/addons/":"/three/examples/jsm/"}}</script>
+<style>
+:root{
+  --bg:#0b0d1a; --panel:rgba(22,24,44,.78); --panel2:rgba(40,42,70,.85); --line:rgba(255,255,255,.09);
+  --text:#f4efe6; --mute:#a5a3b8; --orange:#ff8a3d; --orange2:#ffb067; --teal:#5ff6ff; --pink:#ff6fb5; --green:#7dffb0; --red:#ff5a6a;
+  --r:18px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:Rubik,system-ui,sans-serif;user-select:none}
+canvas#c{position:fixed;inset:0;width:100%;height:100%;display:block}
+.scr{position:fixed;inset:0;display:none;align-items:center;justify-content:center;z-index:10}
+.scr.on{display:flex}
+.vign{position:fixed;inset:0;pointer-events:none;background:radial-gradient(ellipse at center,transparent 45%,rgba(5,4,14,.75) 100%);z-index:5}
+h1.logo{font-family:Unbounded;font-weight:900;font-size:clamp(38px,7vw,92px);line-height:.92;letter-spacing:-.02em;text-transform:uppercase;
+  background:linear-gradient(180deg,#fff6e6 0%,#ffc58a 55%,#ff7a3d 100%);-webkit-background-clip:text;background-clip:text;color:transparent;
+  filter:drop-shadow(0 6px 0 rgba(120,40,10,.55)) drop-shadow(0 18px 30px rgba(255,120,60,.25))}
+.logo small{display:block;font-size:.28em;letter-spacing:.32em;color:var(--teal);-webkit-text-fill-color:var(--teal);margin-top:14px;filter:none;font-weight:700}
+.card{background:var(--panel);backdrop-filter:blur(14px);border:1px solid var(--line);border-radius:28px;padding:28px;box-shadow:0 30px 80px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.06)}
+.btn{font-family:Unbounded;font-weight:700;font-size:16px;color:#2a1404;background:linear-gradient(180deg,var(--orange2),var(--orange));border:none;border-radius:var(--r);
+  padding:16px 26px;cursor:pointer;box-shadow:0 6px 0 #a8461a,0 12px 24px rgba(255,120,50,.25);transition:transform .12s, box-shadow .12s, filter .12s;display:inline-flex;align-items:center;gap:12px;justify-content:center}
+.btn:hover{transform:translateY(-2px);filter:brightness(1.07)}
+.btn:active{transform:translateY(4px);box-shadow:0 2px 0 #a8461a}
+.btn.ghost{background:var(--panel2);color:var(--text);box-shadow:0 6px 0 rgba(0,0,0,.45)}
+.btn.ghost:active{box-shadow:0 2px 0 rgba(0,0,0,.45)}
+.btn.teal{background:linear-gradient(180deg,#a8fbff,var(--teal));color:#05282c;box-shadow:0 6px 0 #1f8e98,0 12px 24px rgba(95,246,255,.2)}
+.btn:disabled{filter:grayscale(1) brightness(.6);cursor:not-allowed;transform:none}
+.ico{width:46px;height:46px;border-radius:14px;display:grid;place-items:center;flex:none;background:linear-gradient(160deg,rgba(255,255,255,.18),rgba(255,255,255,.04));box-shadow:inset 0 -3px 0 rgba(0,0,0,.25),inset 0 1px 0 rgba(255,255,255,.25)}
+.ico svg{width:26px;height:26px}
+.btn .ico{width:34px;height:34px;border-radius:11px}
+.btn .ico svg{width:20px;height:20px}
+input[type=text]{font-family:Unbounded;font-size:22px;padding:16px 20px;border-radius:var(--r);border:2px solid var(--line);background:rgba(0,0,0,.35);color:var(--text);outline:none;width:100%;transition:border-color .2s}
+input[type=text]:focus{border-color:var(--orange)}
+label.lab{font-size:13px;color:var(--mute);letter-spacing:.12em;text-transform:uppercase;font-weight:700;display:block;margin-bottom:10px}
+/* name */
+#sName .wrap{display:flex;flex-direction:column;align-items:center;gap:40px;text-align:center}
+#sName .card{width:min(460px,92vw);display:flex;flex-direction:column;gap:18px;text-align:left}
+/* menu */
+#sMenu{justify-content:flex-start;padding-left:7vw}
+#sMenu .col{display:flex;flex-direction:column;gap:14px;width:min(400px,90vw)}
+#sMenu .col .btn{justify-content:flex-start;font-size:18px;padding:14px 20px}
+#sMenu .who{display:flex;align-items:center;gap:12px;color:var(--mute);margin:26px 0 8px;font-size:15px}
+#sMenu .who b{color:var(--text);font-family:Unbounded}
+.ver{position:fixed;right:18px;bottom:14px;color:var(--mute);font-size:12px;z-index:11}
+/* lobby */
+#sLobby .card{width:min(860px,94vw);display:grid;gap:22px}
+.slots{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.slot{border-radius:24px;padding:22px;background:rgba(0,0,0,.28);border:2px dashed var(--line);min-height:170px;display:flex;flex-direction:column;gap:14px;justify-content:center;align-items:center;text-align:center;transition:.3s}
+.slot.full{border-style:solid;border-color:rgba(255,138,61,.35);background:linear-gradient(180deg,rgba(255,138,61,.12),rgba(0,0,0,.25))}
+.slot.ready{border-color:var(--green);background:linear-gradient(180deg,rgba(125,255,176,.14),rgba(0,0,0,.25))}
+.slot .av{width:74px;height:74px;border-radius:24px;display:grid;place-items:center;background:linear-gradient(160deg,#ffb067,#ff7a3d);box-shadow:inset 0 -5px 0 rgba(0,0,0,.25);animation:bob 2.4s ease-in-out infinite}
+.slot.ready .av{background:linear-gradient(160deg,#b4ffd2,#3fd98a)}
+.slot .nm{font-family:Unbounded;font-size:20px}
+.slot .st{font-size:13px;letter-spacing:.14em;text-transform:uppercase;color:var(--mute);font-weight:700}
+.slot.ready .st{color:var(--green)}
+@keyframes bob{50%{transform:translateY(-6px) rotate(-3deg)}}
+.invite{display:flex;gap:12px;align-items:center;background:rgba(0,0,0,.3);border-radius:var(--r);padding:12px 12px 12px 18px}
+.invite code{flex:1;font-size:15px;color:var(--teal);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,Consolas,monospace}
+.row{display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+.row.end{justify-content:space-between}
+h2{font-family:Unbounded;font-size:26px}
+.hint{color:var(--mute);font-size:14px;line-height:1.5}
+/* settings */
+#sSettings .card{width:min(620px,94vw);display:grid;gap:18px;max-height:92vh;overflow:auto}
+.set{display:grid;grid-template-columns:46px 1fr 160px 56px;gap:14px;align-items:center}
+.set .t{font-weight:500}
+.set .v{font-family:Unbounded;font-size:14px;text-align:right;color:var(--orange2)}
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:12px;border-radius:8px;background:rgba(0,0,0,.4);outline:none}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:24px;height:24px;border-radius:9px;background:linear-gradient(180deg,var(--orange2),var(--orange));box-shadow:0 3px 0 #a8461a;cursor:pointer}
+.seg{display:flex;background:rgba(0,0,0,.35);border-radius:14px;padding:4px;gap:4px}
+.seg button{flex:1;border:none;background:none;color:var(--mute);font-family:Rubik;font-weight:700;padding:8px 6px;border-radius:10px;cursor:pointer;font-size:13px}
+.seg button.on{background:var(--orange);color:#2a1404}
+/* help */
+#sHelp .card{width:min(820px,94vw);max-height:92vh;overflow:auto}
+.keys{display:grid;grid-template-columns:1fr 1fr;gap:10px 26px;margin:16px 0}
+.k{display:flex;gap:12px;align-items:center;font-size:15px}
+kbd{font-family:Unbounded;font-size:12px;min-width:36px;padding:7px 9px;text-align:center;border-radius:10px;background:var(--panel2);box-shadow:0 3px 0 rgba(0,0,0,.5);color:var(--orange2)}
+/* HUD */
+#hud{position:fixed;inset:0;pointer-events:none;z-index:8;display:none}
+#hud.on{display:block}
+.bars{position:absolute;left:22px;top:20px;display:grid;gap:9px;width:290px}
+.bar{display:grid;grid-template-columns:38px 1fr;gap:10px;align-items:center}
+.bar .ico{width:38px;height:38px;border-radius:12px}
+.bar .ico svg{width:22px;height:22px}
+.bar .tr{height:16px;border-radius:9px;background:rgba(0,0,0,.45);overflow:hidden;position:relative;box-shadow:inset 0 2px 4px rgba(0,0,0,.4)}
+.bar .fl{height:100%;border-radius:9px;transition:width .2s}
+.bar .tx{position:absolute;inset:0;font-size:11px;font-weight:700;display:flex;align-items:center;padding-left:8px;text-shadow:0 1px 2px #000}
+.mate{margin-top:6px;background:var(--panel);border-radius:16px;padding:10px 12px;display:flex;gap:10px;align-items:center;font-size:13px}
+.mate b{font-family:Unbounded;font-size:13px}
+.mission{position:absolute;left:50%;top:18px;transform:translateX(-50%);background:var(--panel);backdrop-filter:blur(8px);border-radius:18px;padding:10px 18px;display:flex;align-items:center;gap:12px;min-width:280px}
+.mission .tt{font-family:Unbounded;font-size:14px}
+.mission .pp{font-size:12px;color:var(--mute)}
+.mission .pb{height:6px;border-radius:4px;background:rgba(0,0,0,.4);margin-top:6px;overflow:hidden}
+.mission .pb i{display:block;height:100%;background:var(--teal);border-radius:4px;transition:width .3s}
+.money{position:absolute;right:22px;top:20px;display:grid;gap:8px;justify-items:end}
+.chip{background:var(--panel);border-radius:16px;padding:8px 14px 8px 8px;display:flex;align-items:center;gap:10px;font-family:Unbounded;font-size:16px}
+.chip .ico{width:32px;height:32px;border-radius:10px}
+.chip .ico svg{width:19px;height:19px}
+#prompt{position:absolute;left:50%;top:62%;transform:translateX(-50%);font-weight:700;font-size:17px;padding:10px 18px;border-radius:14px;background:rgba(10,10,24,.7);display:none;white-space:nowrap}
+#prompt kbd{margin-right:8px}
+#holdbar{position:absolute;left:50%;top:calc(62% + 52px);transform:translateX(-50%);width:200px;height:8px;border-radius:5px;background:rgba(0,0,0,.5);overflow:hidden;display:none}
+#holdbar i{display:block;height:100%;width:0;background:var(--green)}
+#cross{position:absolute;left:50%;top:50%;width:6px;height:6px;margin:-3px;border-radius:50%;background:#fff;box-shadow:0 0 6px #000}
+#reticle{position:absolute;left:50%;top:50%;width:150px;height:150px;margin:-75px;border-radius:50%;border:2px solid rgba(95,246,255,.35);display:none}
+#reticle:after{content:"";position:absolute;left:50%;top:50%;width:14px;height:14px;margin:-7px;border:2px solid var(--teal);border-radius:5px}
+#stick{position:absolute;left:50%;top:50%;width:12px;height:12px;margin:-6px;border-radius:50%;background:var(--orange);box-shadow:0 0 10px var(--orange);display:none}
+#tcross{position:absolute;left:50%;top:50%;width:46px;height:46px;margin:-23px;display:none}
+#tcross:before,#tcross:after{content:"";position:absolute;background:var(--orange);border-radius:3px;box-shadow:0 0 8px var(--orange)}
+#tcross:before{left:21px;top:0;width:4px;height:14px;box-shadow:0 32px 0 var(--orange)}
+#tcross:after{top:21px;left:0;height:4px;width:14px;box-shadow:32px 0 0 var(--orange)}
+#flight{position:absolute;left:50%;bottom:26px;transform:translateX(-50%);display:none;gap:12px;align-items:flex-end}
+.gauge{background:var(--panel);border-radius:16px;padding:10px 14px;min-width:120px;text-align:center}
+.gauge .n{font-family:Unbounded;font-size:22px}
+.gauge .l{font-size:11px;color:var(--mute);letter-spacing:.12em;text-transform:uppercase;font-weight:700}
+.thr{height:8px;border-radius:5px;background:rgba(0,0,0,.45);overflow:hidden;margin-top:6px}
+.thr i{display:block;height:100%;background:linear-gradient(90deg,var(--teal),var(--orange))}
+#marks{position:absolute;inset:0}
+.mk{position:absolute;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11px;font-weight:700;text-shadow:0 1px 3px #000}
+.mk .d{width:18px;height:18px;border-radius:6px;border:2px solid currentColor;transform:rotate(45deg)}
+.mk.en .d{width:10px;height:10px;border-radius:3px;border-width:2px}
+#toasts{position:absolute;left:50%;top:96px;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px;align-items:center}
+.toast{background:var(--panel);border-radius:14px;padding:9px 16px;font-weight:700;font-size:15px;animation:tin .3s ease-out;border-left:4px solid var(--teal)}
+.toast.red{border-color:var(--red);color:#ffd2d7}.toast.green{border-color:var(--green)}.toast.chat{border-color:var(--orange)}
+@keyframes tin{from{opacity:0;transform:translateY(-10px) scale(.95)}}
+#dmg{position:fixed;inset:0;pointer-events:none;z-index:7;box-shadow:inset 0 0 160px rgba(255,40,60,.0);transition:box-shadow .15s}
+#alarm{position:absolute;left:50%;bottom:140px;transform:translateX(-50%);font-family:Unbounded;font-weight:900;font-size:22px;color:var(--red);text-shadow:0 0 18px rgba(255,60,80,.8);display:none;animation:blink 1s steps(2) infinite}
+@keyframes blink{50%{opacity:.25}}
+#downed{position:fixed;inset:0;z-index:9;display:none;align-items:center;justify-content:center;flex-direction:column;gap:12px;background:radial-gradient(circle,rgba(80,0,10,.2),rgba(40,0,0,.75));pointer-events:none}
+#downed h2{font-size:40px;color:var(--red)}
+/* panels */
+#panel .card{width:min(980px,95vw);max-height:90vh;overflow:auto;display:grid;gap:18px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:14px}
+.it{background:rgba(0,0,0,.28);border-radius:22px;padding:16px;display:flex;flex-direction:column;gap:10px;border:1px solid var(--line);transition:transform .15s,border-color .15s}
+.it:hover{transform:translateY(-3px);border-color:rgba(255,138,61,.4)}
+.it .ico{width:56px;height:56px;border-radius:18px}
+.it .ico svg{width:32px;height:32px}
+.it .nm{font-family:Unbounded;font-size:15px}
+.it .ds{font-size:13px;color:var(--mute);line-height:1.4;flex:1}
+.pips{display:flex;gap:5px}
+.pips i{width:16px;height:8px;border-radius:4px;background:rgba(255,255,255,.12)}
+.pips i.on{background:var(--orange)}
+.it .btn{padding:10px 14px;font-size:14px}
+.mis{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}
+.mis .it .ico{width:64px;height:64px}
+/* over / pause */
+#sOver .card,#sPause .card{text-align:center;display:grid;gap:18px;justify-items:center;min-width:min(480px,92vw)}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;width:100%}
+.stats div{background:rgba(0,0,0,.3);border-radius:16px;padding:12px}
+.stats b{display:block;font-family:Unbounded;font-size:22px;color:var(--orange2)}
+.stats span{font-size:11px;color:var(--mute);text-transform:uppercase;letter-spacing:.1em;font-weight:700}
+#loading{position:fixed;inset:0;z-index:50;background:var(--bg);display:flex;align-items:center;justify-content:center;font-family:Unbounded;font-size:20px;color:var(--mute)}
+#chatIn{position:absolute;left:22px;bottom:22px;width:360px;display:none;pointer-events:auto}
+#chatIn input{font-size:15px;padding:10px 14px}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="vign"></div>
+<div id="loading">Загрузка пустоты…</div>
+
+<!-- NAME -->
+<div class="scr" id="sName"><div class="wrap">
+  <h1 class="logo">Двое в<br>Пустоте<small>КООП · ХАРДКОР · ТВАРИ</small></h1>
+  <div class="card">
+    <label class="lab">Как тебя звать, пилот?</label>
+    <input type="text" id="nameIn" maxlength="16" placeholder="Ник" autocomplete="off">
+    <button class="btn" id="nameOk"><span class="ico" data-i="arrow"></span>Погнали</button>
+  </div>
+</div></div>
+
+<!-- MENU -->
+<div class="scr" id="sMenu"><div>
+  <h1 class="logo">Двое в<br>Пустоте<small>КООП · ХАРДКОР · ТВАРИ</small></h1>
+  <div class="who"><span class="ico" data-i="user"></span>Пилот <b id="whoName"></b> <button class="btn ghost" style="padding:6px 12px;font-size:12px" id="reName">сменить</button></div>
+  <div class="col">
+    <button class="btn" id="mPlay"><span class="ico" data-i="play"></span>Играть</button>
+    <button class="btn ghost" id="mSet"><span class="ico" data-i="gear"></span>Настройки</button>
+    <button class="btn ghost" id="mHelp"><span class="ico" data-i="pad"></span>Как играть</button>
+  </div>
+</div></div>
+<div class="ver" id="ver">v1.0 · сервер: <span id="netSt">подключение…</span></div>
+
+<!-- LOBBY -->
+<div class="scr" id="sLobby"><div class="card">
+  <div class="row end"><h2>Лобби экипажа</h2><span class="hint">Корабль на двоих. Один рулит, второй у турели. Меняйтесь.</span></div>
+  <div class="slots" id="slots"></div>
+  <div>
+    <label class="lab">Приглашение другу — кинь ему эту ссылку</label>
+    <div class="invite"><span class="ico" data-i="link"></span><code id="invUrl">туннель поднимается…</code><button class="btn teal" id="copyBtn" style="padding:10px 16px;font-size:13px">Копировать</button></div>
+    <div class="hint" id="lanHint" style="margin-top:8px"></div>
+  </div>
+  <div class="row end">
+    <button class="btn ghost" id="lBack"><span class="ico" data-i="back"></span>Назад</button>
+    <div class="row">
+      <button class="btn ghost" id="lReady"><span class="ico" data-i="check"></span>Готов</button>
+      <button class="btn" id="lStart"><span class="ico" data-i="rocket"></span>Старт</button>
+    </div>
+  </div>
+</div></div>
+
+<!-- SETTINGS -->
+<div class="scr" id="sSettings"><div class="card">
+  <h2>Настройки</h2>
+  <div class="set"><span class="ico" data-i="mouse"></span><span class="t">Чувствительность мыши</span><input type="range" id="stSens" min="0.2" max="3" step="0.05"><span class="v" id="vSens"></span></div>
+  <div class="set"><span class="ico" data-i="eye"></span><span class="t">Поле зрения (FOV)</span><input type="range" id="stFov" min="60" max="110" step="1"><span class="v" id="vFov"></span></div>
+  <div class="set"><span class="ico" data-i="sound"></span><span class="t">Громкость</span><input type="range" id="stVol" min="0" max="1" step="0.01"><span class="v" id="vVol"></span></div>
+  <div class="set"><span class="ico" data-i="music"></span><span class="t">Музыка</span><input type="range" id="stMus" min="0" max="1" step="0.01"><span class="v" id="vMus"></span></div>
+  <div class="set"><span class="ico" data-i="flip"></span><span class="t">Инверсия Y в полёте</span><div class="seg" id="stInv"><button data-v="0">Нет</button><button data-v="1">Да</button></div><span></span></div>
+  <div class="set"><span class="ico" data-i="spark"></span><span class="t">Графика</span><div class="seg" id="stQ"><button data-v="0">Низ</button><button data-v="1">Сред</button><button data-v="2">Ультра</button></div><span></span></div>
+  <div class="set"><span class="ico" data-i="shake"></span><span class="t">Тряска камеры</span><div class="seg" id="stShake"><button data-v="0">Выкл</button><button data-v="1">Вкл</button></div><span></span></div>
+  <div class="row end"><span class="hint">Сохраняется само</span><button class="btn" id="setBack"><span class="ico" data-i="check"></span>Готово</button></div>
+</div></div>
+
+<!-- HELP -->
+<div class="scr" id="sHelp"><div class="card">
+  <h2>Как играть</h2>
+  <p class="hint" style="margin-top:8px">Вы — экипаж одного корабля. Берите миссию на станции, вылетайте, рвите тварей, тушите пожары, чините пробоины, поднимайте друг друга. Лут с тварей — ◆, тратьте в магазине станции. Каждый 3-й сектор — босс. Погибнет корабль или оба — всё, заново.</p>
+  <div class="keys">
+    <div class="k"><kbd>WASD</kbd>ходить по кораблю</div><div class="k"><kbd>Мышь</kbd>смотреть / рулить / целиться</div>
+    <div class="k"><kbd>E</kbd>сесть / встать / терминал</div><div class="k"><kbd>F</kbd>держать — тушить и чинить</div>
+    <div class="k"><kbd>E</kbd>держать у лежачего — поднять</div><div class="k"><kbd>Пробел</kbd>прыжок</div>
+    <div class="k"><kbd>W/S</kbd>за штурвалом — тяга</div><div class="k"><kbd>A/D</kbd>крен</div>
+    <div class="k"><kbd>Shift</kbd>форсаж</div><div class="k"><kbd>X</kbd>стоп-тяга</div>
+    <div class="k"><kbd>ЛКМ</kbd>огонь</div><div class="k"><kbd>ПКМ</kbd>ракеты (если куплены)</div>
+    <div class="k"><kbd>G</kbd>стыковка / отстыковка</div><div class="k"><kbd>Enter</kbd>чат</div>
+    <div class="k"><kbd>Esc</kbd>пауза / курсор</div><div class="k"><kbd>Shift</kbd>пешком — бег</div>
+  </div>
+  <p class="hint">Стыковка: подлетите медленно к кольцу у станции (жёлтая метка «ДОК»), нажмите G. На станции — левое крыло: магазин и ремонт, правое: миссии и медотсек. Выход — через шлюзы в машинном отсеке.</p>
+  <div class="row end" style="margin-top:14px"><span></span><button class="btn" id="helpBack"><span class="ico" data-i="check"></span>Понял</button></div>
+</div></div>
+
+<!-- HUD -->
+<div id="hud">
+  <div class="bars">
+    <div class="bar"><span class="ico" data-i="ship" style="background:linear-gradient(160deg,#ffb067,#d95f22)"></span><div class="tr"><div class="fl" id="bHull" style="background:linear-gradient(90deg,#ff8a3d,#ffc58a)"></div><div class="tx" id="tHull"></div></div></div>
+    <div class="bar"><span class="ico" data-i="shield" style="background:linear-gradient(160deg,#a8fbff,#2bb7c7)"></span><div class="tr"><div class="fl" id="bSh" style="background:linear-gradient(90deg,#2bb7c7,#a8fbff)"></div><div class="tx" id="tSh"></div></div></div>
+    <div class="bar"><span class="ico" data-i="heart" style="background:linear-gradient(160deg,#ff9fb0,#e0435a)"></span><div class="tr"><div class="fl" id="bHp" style="background:linear-gradient(90deg,#e0435a,#ff9fb0)"></div><div class="tx" id="tHp"></div></div></div>
+    <div class="bar" id="stBar" style="display:none"><span class="ico" data-i="station" style="background:linear-gradient(160deg,#c9b6ff,#7a5cff)"></span><div class="tr"><div class="fl" id="bSt" style="background:linear-gradient(90deg,#7a5cff,#c9b6ff)"></div><div class="tx" id="tSt"></div></div></div>
+    <div class="mate" id="mate" style="display:none"><span class="ico" data-i="user" style="width:30px;height:30px;border-radius:10px"></span><div><b id="mName"></b><div id="mSt" style="color:var(--mute)"></div></div></div>
+  </div>
+  <div class="mission" id="mis"><span class="ico" data-i="target"></span><div style="flex:1"><div class="tt" id="misT"></div><div class="pp" id="misP"></div><div class="pb"><i id="misB"></i></div></div></div>
+  <div class="money"><div class="chip"><span class="ico" data-i="gem" style="background:linear-gradient(160deg,#a8fbff,#5f7dff)"></span><span id="cr">0</span></div><div class="chip" style="font-size:13px"><span class="ico" data-i="map"></span>Сектор <span id="sec">1</span></div></div>
+  <div id="marks"></div>
+  <div id="cross"></div><div id="reticle"></div><div id="stick"></div><div id="tcross"></div>
+  <div id="prompt"></div><div id="holdbar"><i></i></div>
+  <div id="flight"><div class="gauge"><div class="n" id="spd">0</div><div class="l">скорость</div><div class="thr"><i id="thr"></i></div></div><div class="gauge"><div class="n" id="boost">100</div><div class="l">форсаж</div></div><div class="gauge" id="rkG"><div class="n" id="rk">—</div><div class="l">ракеты</div></div></div>
+  <div id="alarm"></div>
+  <div id="toasts"></div>
+  <div id="chatIn"><input type="text" id="chatTxt" maxlength="80" placeholder="Сообщение напарнику…"></div>
+</div>
+<div id="dmg"></div>
+<div id="downed"><h2>ТЫ ЛЕЖИШЬ</h2><div class="hint" id="downHint" style="color:#fff;font-size:18px"></div></div>
+
+<!-- PANEL (shop / missions) -->
+<div class="scr" id="panel"><div class="card">
+  <div class="row end"><h2 id="pTitle"></h2><div class="row"><div class="chip"><span class="ico" data-i="gem" style="background:linear-gradient(160deg,#a8fbff,#5f7dff)"></span><span id="pCr">0</span></div><button class="btn ghost" id="pClose"><span class="ico" data-i="back"></span>Закрыть [E]</button></div></div>
+  <div id="pBody"></div>
+</div></div>
+
+<!-- PAUSE -->
+<div class="scr" id="sPause"><div class="card">
+  <h2>Пауза</h2><p class="hint">Игра идёт дальше — твари не ждут.</p>
+  <button class="btn" id="pzGo"><span class="ico" data-i="play"></span>Продолжить</button>
+  <button class="btn ghost" id="pzSet"><span class="ico" data-i="gear"></span>Настройки</button>
+  <button class="btn ghost" id="pzHelp"><span class="ico" data-i="pad"></span>Управление</button>
+</div></div>
+
+<!-- OVER -->
+<div class="scr" id="sOver"><div class="card">
+  <h1 class="logo" style="font-size:54px">Конец</h1>
+  <p class="hint" id="ovReason" style="font-size:18px;color:var(--text)"></p>
+  <div class="stats"><div><b id="ovSec"></b><span>сектор</span></div><div><b id="ovKills"></b><span>убито</span></div><div><b id="ovCr"></b><span>◆</span></div><div><b id="ovTime"></b><span>время</span></div></div>
+  <button class="btn" id="ovBack"><span class="ico" data-i="back"></span>В лобби</button>
+</div></div>
+
+<script>
+(function () {
+  var L = document.getElementById('loading'), t0 = Date.now();
+  function msg(t) { if (L && L.style.display !== 'none') L.innerHTML = '<div style="text-align:center;max-width:640px;line-height:1.6;padding:20px">' + t + '</div>'; }
+  window.addEventListener('error', function (e) { msg('Ошибка загрузки: ' + (e.message || (e.target && (e.target.src || e.target.href)) || 'неизвестно') + '<br><small>Обнови страницу (F5). Если не помогло — ссылка устарела, попроси новую.</small>'); }, true);
+  var iv = setInterval(function () {
+    if (!L || L.style.display === 'none') return clearInterval(iv);
+    var s = Math.round((Date.now() - t0) / 1000);
+    if (s >= 8) msg('Загрузка пустоты… ' + s + ' с<br><small>Сеть медленная, игра весит ~1 МБ. Если больше минуты — обнови страницу или попроси новую ссылку.</small>');
+  }, 1000);
+})();
+</script>
+<script type="module" src="/js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,774 @@
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { buildShip, buildStation, buildSpace, Particles, makeAvatar, makeViewModel, WALK, WALK_DOCK, OBST, SEATS, TERMINALS, FIRE_SLOTS, DOCK_P, DOCK_APPROACH } from './world.js';
+import { makeCreature, animateCreature, CREATURE_COLORS, CREATURE_RAD } from './creatures.js';
+import { initAudio, sfx, setVolume, setEngine, setHiss, setIntensity } from './audio.js';
+import { icon, fillIcons } from './icons.js';
+
+const $ = id => document.getElementById(id);
+const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+const now = () => performance.now() / 1000;
+
+// ---------- настройки ----------
+const DEF = { sens: 1, fov: 80, vol: 0.7, mus: 0.4, inv: 0, q: 1, shake: 1 };
+const SET = { ...DEF };
+try { Object.assign(SET, JSON.parse(localStorage.getItem('dvp_set') || '{}')); } catch { }
+const saveSet = () => { try { localStorage.setItem('dvp_set', JSON.stringify(SET)); } catch { } };
+let myName = ''; try { myName = localStorage.getItem('dvp_name') || ''; } catch { }
+
+// ---------- рендер ----------
+const renderer = new THREE.WebGLRenderer({ canvas: $('c'), antialias: true, powerPreference: 'high-performance' });
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x05040c);
+const camera = new THREE.PerspectiveCamera(SET.fov, innerWidth / innerHeight, 0.08, 16000);
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.55, 0.45, 0.9);
+composer.addPass(bloom); composer.addPass(new OutputPass());
+function applySettings() {
+  renderer.setPixelRatio(Math.min(devicePixelRatio, [0.7, 1, 2][SET.q]));
+  bloom.enabled = SET.q > 0;
+  camera.fov = SET.fov; resize();
+  setVolume(SET.vol, SET.mus);
+}
+function resize() {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight);
+  for (const p of [fx, fxN, fxS, fxSN]) if (p) p.mat.uniforms.uScale.value = innerHeight * 0.5 * renderer.getPixelRatio();
+}
+addEventListener('resize', resize);
+
+// ---------- мир ----------
+const space = buildSpace(scene);
+const station = buildStation(); scene.add(station.group);
+const SH = buildShip(); scene.add(SH.group); SH.group.position.copy(DOCK_P);
+SH.group.add(camera);
+const vm = makeViewModel(); camera.add(vm.group); vm.group.children.forEach(c => { c.scale.setScalar(0.7); c.position.multiplyScalar(0.95); });
+const fx = new Particles(scene, 5000, true), fxN = new Particles(scene, 1500, false);
+const fxS = new Particles(SH.inner, 1500, true), fxSN = new Particles(SH.inner, 1200, false);
+applySettings();
+
+// ---------- сеть ----------
+let ws = null, myId = null, lobby = null, snap = null, snapT = 0, phase = 'menu';
+function connect() {
+  ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
+  ws.onopen = () => { $('netSt').textContent = 'онлайн'; if (myName) send({ t: 'hello', n: myName }); };
+  ws.onclose = () => { $('netSt').textContent = 'нет связи…'; if (phase === 'game') { toast('Связь с сервером потеряна', 'red'); leaveGame(); show('sMenu'); } setTimeout(connect, 1500); };
+  ws.onmessage = e => { try { onMsg(JSON.parse(e.data)); } catch (err) { console.error(err); } };
+}
+const send = o => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); };
+
+function onMsg(m) {
+  switch (m.t) {
+    case 'welcome': myId = m.id; break;
+    case 'full': toast('Сервер полон (2 игрока максимум)', 'red'); break;
+    case 'lobby': lobby = m; renderLobby(); break;
+    case 'start': enterGame(); break;
+    case 'lobbyback': leaveGame(); show('sLobby'); break;
+    case 'toast': toast(m.m, m.c); break;
+    case 'shot': spawnBolt(V3(...m.o), V3(...m.d), m.k, false); break;
+    case 'over': onOver(m.stats); break;
+    case 's': onSnap(m); break;
+  }
+}
+
+// ---------- экраны ----------
+let screen = '';
+function show(id) { document.querySelectorAll('.scr').forEach(s => s.classList.toggle('on', s.id === id)); screen = id; }
+fillIcons();
+document.addEventListener('click', e => { initAudio(); if (e.target.closest('.btn')) sfx.click(); });
+document.addEventListener('mouseover', e => { if (e.target.classList && e.target.classList.contains('btn')) sfx.hover(); });
+$('nameIn').value = myName;
+function setName() {
+  const n = $('nameIn').value.trim().slice(0, 16); if (!n) { $('nameIn').focus(); return; }
+  myName = n; try { localStorage.setItem('dvp_name', n); } catch { }
+  send({ t: 'hello', n }); $('whoName').textContent = n; show('sMenu');
+}
+$('nameOk').onclick = setName;
+$('nameIn').onkeydown = e => { if (e.key === 'Enter') setName(); };
+$('reName').onclick = () => show('sName');
+$('mPlay').onclick = () => { show('sLobby'); renderLobby(); };
+let settingsBack = 'sMenu', helpBack = 'sMenu';
+$('mSet').onclick = () => { settingsBack = 'sMenu'; openSettings(); };
+$('mHelp').onclick = () => { helpBack = 'sMenu'; show('sHelp'); };
+$('helpBack').onclick = () => { show(helpBack); };
+$('setBack').onclick = () => { show(settingsBack); };
+$('lBack').onclick = () => { if (amReady()) send({ t: 'ready', v: false }); show('sMenu'); };
+$('lReady').onclick = () => send({ t: 'ready', v: !amReady() });
+$('lStart').onclick = () => { if (!amReady()) send({ t: 'ready', v: true }); setTimeout(() => send({ t: 'start' }), 120); };
+$('copyBtn').onclick = () => {
+  const u = $('invUrl').textContent;
+  (navigator.clipboard ? navigator.clipboard.writeText(u) : Promise.reject()).then(() => toast('Ссылка скопирована — кидай другу', 'green')).catch(() => { const r = document.createRange(); r.selectNode($('invUrl')); getSelection().removeAllRanges(); getSelection().addRange(r); toast('Выделил — нажми Ctrl+C', ''); });
+};
+const amReady = () => !!(lobby && lobby.players.find(p => p.id === myId && p.r));
+function renderLobby() {
+  if (!lobby) return;
+  const el = $('slots'); el.innerHTML = '';
+  for (let i = 0; i < 2; i++) {
+    const p = lobby.players[i];
+    const d = document.createElement('div');
+    d.className = 'slot' + (p ? ' full' : '') + (p && p.r ? ' ready' : '');
+    d.innerHTML = p ? `<div class="av">${icon('user', '#2a1404')}</div><div class="nm">${esc(p.n)}${p.id === myId ? ' <span style="color:var(--mute);font-size:13px">(ты)</span>' : ''}</div><div class="st">${p.r ? 'готов' : 'не готов'}${p.host ? ' · хост' : ''}</div>`
+      : `<div class="ico" style="width:74px;height:74px;border-radius:24px">${icon('link')}</div><div class="nm" style="color:var(--mute)">Ждём напарника…</div><div class="st">кинь ссылку ниже</div>`;
+    el.appendChild(d);
+  }
+  const radmin = lobby.lan.find(u => u.startsWith('http://26.'));
+  const others = lobby.lan.filter(u => u !== radmin);
+  $('invUrl').textContent = radmin || lobby.url || (lobby.lan[0] || location.origin);
+  $('lanHint').innerHTML = (radmin ? '<b style="color:var(--teal)">Через Radmin VPN</b> — быстро и без лагов: друг ставит Radmin VPN, заходит в твою сеть и открывает эту ссылку.<br>' : '')
+    + (lobby.url ? (radmin ? 'Запасной интернет-туннель (медленный): ' : '') + '<code style="color:var(--orange2)">' + esc(lobby.url) + '</code><br>' : '')
+    + (others.length ? 'В одной Wi-Fi сети: ' + others.map(esc).join(', ') : '');
+  $('lReady').innerHTML = `<span class="ico">${icon('check')}</span>${amReady() ? 'Не готов' : 'Готов'}`;
+  if (lobby.phase === 'game' && phase !== 'game' && screen === 'sLobby') send({ t: 'hello', n: myName });
+}
+const esc = s => String(s).replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+
+// настройки
+function openSettings() {
+  show('sSettings');
+  const bind = (id, k, fmt) => { const el = $(id), v = $('v' + id.slice(2)); el.value = SET[k]; v.textContent = fmt(SET[k]); el.oninput = () => { SET[k] = +el.value; v.textContent = fmt(SET[k]); saveSet(); applySettings(); }; };
+  bind('stSens', 'sens', x => (+x).toFixed(2)); bind('stFov', 'fov', x => x + '°'); bind('stVol', 'vol', x => Math.round(x * 100) + '%'); bind('stMus', 'mus', x => Math.round(x * 100) + '%');
+  const seg = (id, k) => { const el = $(id); const upd = () => el.querySelectorAll('button').forEach(b => b.classList.toggle('on', +b.dataset.v === SET[k])); el.querySelectorAll('button').forEach(b => b.onclick = () => { SET[k] = +b.dataset.v; saveSet(); applySettings(); upd(); }); upd(); };
+  seg('stInv', 'inv'); seg('stQ', 'q'); seg('stShake', 'shake');
+}
+
+// тосты
+function toast(m, c) {
+  const d = document.createElement('div'); d.className = 'toast ' + (c || ''); d.textContent = m;
+  const box = $('toasts'); box.appendChild(d); while (box.children.length > 5) box.firstChild.remove();
+  setTimeout(() => d.remove(), 3800);
+  if (phase !== 'game') { d.style.position = 'fixed'; }
+}
+// тосты в меню тоже видны
+$('hud').classList.add('on'); $('hud').querySelectorAll(':scope > *:not(#toasts)').forEach(e => e.dataset.hudPart = 1);
+function hudParts(on) { $('hud').querySelectorAll('[data-hud-part]').forEach(e => e.style.visibility = on ? 'visible' : 'hidden'); }
+hudParts(false);
+
+// ---------- локальное состояние ----------
+const me = { p: V3(0, 0, 1.5), y: 0, vy: 0, yaw: 0, pitch: 0, seat: null, seatLock: 0, tyaw: 0, tpitch: 0, hp: 100, down: false, dead: false, moving: false, tool: false, stepT: 0 };
+const keys = {};
+const mouse = { l: false, r: false };
+const stick = new THREE.Vector2();
+const PS = { active: false, p: V3(), q: new THREE.Quaternion(), v: V3(), w: V3(), thr: 0, boost: 100, gunCd: 0, rkCd: 0, ramCd: 0 };
+let docked = true, panelOpen = null, chatOpen = false, shake = 0, dmgFlash = 0, lastAv = 0, lastShip = 0, alarmT = 0;
+const mates = new Map();
+const ENT = new Map(), EPJ = new Map(), LOOT = new Map(), FIRES = new Map();
+const bolts = [];
+let tGun = 0;
+
+function enterGame() {
+  phase = 'game'; show(''); hudParts(true);
+  Object.assign(me, { p: V3(0, 0, 1.5), y: 0, vy: 0, yaw: 0, pitch: 0, seat: null, down: false, dead: false });
+  SH.hull.visible = false;
+  for (const m of [ENT, EPJ, LOOT, FIRES]) { for (const v of m.values()) removeObj(v); m.clear(); }
+  for (const a of mates.values()) SH.inner.remove(a.group); mates.clear();
+  PS.active = false; PS.thr = 0; PS.boost = 100;
+  lockPointer();
+  toast('Вы на борту. Возьмите миссию в правом крыле станции', 'blue');
+  toast('Кликни по экрану, чтобы управлять', '');
+}
+function leaveGame() {
+  phase = 'menu'; hudParts(false); $('downed').style.display = 'none';
+  if (document.pointerLockElement) document.exitPointerLock();
+  panelOpen = null; me.seat = null; PS.active = false;
+  SH.group.position.copy(DOCK_P); SH.group.quaternion.set(0, 1, 0, 0);
+}
+function removeObj(v) { const o = v.o ? v.o.group : v.mesh || v.g; if (o && o.parent) o.parent.remove(o); }
+function onOver(st) {
+  phase = 'over'; hudParts(false);
+  if (document.pointerLockElement) document.exitPointerLock();
+  $('ovReason').textContent = st.reason; $('ovSec').textContent = st.sector; $('ovKills').textContent = st.kills; $('ovCr').textContent = st.credits;
+  $('ovTime').textContent = Math.floor(st.time / 60) + ':' + String(st.time % 60).padStart(2, '0');
+  show('sOver'); $('downed').style.display = 'none'; sfx.down();
+}
+$('ovBack').onclick = () => { send({ t: 'tolobby' }); };
+
+// ---------- указатель ----------
+const canvas = $('c');
+function lockPointer() { try { const r = canvas.requestPointerLock(); if (r && r.catch) r.catch(() => { }); } catch { } }
+canvas.addEventListener('click', () => { if (phase === 'game' && !panelOpen && !chatOpen && screen !== 'sPause') lockPointer(); });
+document.addEventListener('pointerlockchange', () => {
+  if (!document.pointerLockElement && phase === 'game' && !panelOpen && !chatOpen && screen === '') show('sPause');
+  if (document.pointerLockElement && screen === 'sPause') show('');
+});
+$('pzGo').onclick = () => { show(''); lockPointer(); };
+$('pzSet').onclick = () => { settingsBack = 'sPause'; openSettings(); };
+$('pzHelp').onclick = () => { helpBack = 'sPause'; show('sHelp'); };
+addEventListener('mousemove', e => {
+  if (!document.pointerLockElement || phase !== 'game') return;
+  const s = SET.sens * 0.0022;
+  if (me.down || me.dead) return;
+  if (me.seat === 'pilot') { stick.x += e.movementX * s * 1.3; stick.y += e.movementY * s * 1.3 * (SET.inv ? -1 : 1); if (stick.length() > 1) stick.normalize(); }
+  else if (me.seat) { me.tyaw -= e.movementX * s * 0.8; me.tpitch -= e.movementY * s * 0.8; me.tyaw = clamp(me.tyaw, -1.7, 1.7); me.tpitch = clamp(me.tpitch, -1.15, 1.45); }
+  else { me.yaw -= e.movementX * s; me.pitch = clamp(me.pitch - e.movementY * s, -1.5, 1.5); }
+});
+addEventListener('mousedown', e => { if (e.button === 0) mouse.l = true; if (e.button === 2) mouse.r = true; });
+addEventListener('mouseup', e => { if (e.button === 0) mouse.l = false; if (e.button === 2) mouse.r = false; });
+addEventListener('contextmenu', e => e.preventDefault());
+addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') { if (e.code === 'Enter' && chatOpen) { const t = $('chatTxt').value.trim(); if (t) send({ t: 'chat', m: t }); closeChat(); } if (e.code === 'Escape' && chatOpen) closeChat(); return; }
+  keys[e.code] = true;
+  if (phase !== 'game') return;
+  if (e.code === 'Tab') e.preventDefault();
+  if (panelOpen) { if (e.code === 'KeyE' || e.code === 'Escape') closePanel(); return; }
+  if (e.code === 'Enter') { openChat(); return; }
+  if (e.code === 'KeyE' && !e.repeat) onUse();
+  if (e.code === 'KeyG' && !e.repeat && me.seat === 'pilot') send({ t: docked ? 'undock' : 'dock' });
+  if (e.code === 'KeyX' && me.seat === 'pilot') PS.thr = 0;
+  if (e.code === 'Space' && !me.seat && me.y <= 0 && !me.down) { me.vy = 4.6; sfx.jump(); }
+});
+addEventListener('keyup', e => { keys[e.code] = false; });
+addEventListener('blur', () => { for (const k in keys) keys[k] = false; mouse.l = mouse.r = false; });
+function openChat() { chatOpen = true; $('chatIn').style.display = 'block'; $('chatTxt').value = ''; document.exitPointerLock(); setTimeout(() => $('chatTxt').focus(), 10); }
+function closeChat() { chatOpen = false; $('chatIn').style.display = 'none'; $('chatTxt').blur(); lockPointer(); }
+
+// ---------- снапшоты ----------
+function onSnap(m) {
+  snap = m; snapT = now();
+  docked = !!m.ship.dk;
+  for (const e of m.ev) onEvent(e);
+  // я и напарник
+  const seen = new Set();
+  for (const p of m.pl) {
+    if (p.id === myId) {
+      me.hp = p.hp; const wasDown = me.down; me.down = !!p.dn; me.dead = !!p.dd; me.bleed = p.bl;
+      if (me.down && !wasDown) { sfx.down(); me.seat = null; }
+      if (wasDown && !me.down && !me.dead) sfx.revive();
+      if (now() > me.seatLock && p.s !== me.seat) { setSeat(p.s); }
+      continue;
+    }
+    seen.add(p.id);
+    let a = mates.get(p.id);
+    if (!a) { a = makeAvatar(p.n, 0x5fb8ff); a.p = V3(...p.p); a.yawS = p.y; SH.inner.add(a.group); mates.set(p.id, a); }
+    a.st = p;
+  }
+  for (const [id, a] of mates) if (!seen.has(id)) { SH.inner.remove(a.group); mates.delete(id); }
+  // твари
+  const ids = new Set();
+  for (const e of m.en) {
+    const [id, ty, x, y, z, vx, vy, vz, hp, hm, st] = e; ids.add(id);
+    let E = ENT.get(id);
+    if (!E) { const o = makeCreature(ty); o.group.position.set(x, y, z); scene.add(o.group); E = { o, ty, sp: V3(), sv: V3(), hp, hm }; ENT.set(id, E); }
+    E.sp.set(x, y, z); E.sv.set(vx, vy, vz); E.rt = snapT; E.hp = hp; E.hm = hm; E.st = st;
+  }
+  for (const [id, E] of ENT) if (!ids.has(id)) { scene.remove(E.o.group); ENT.delete(id); }
+  // снаряды тварей
+  const pids = new Set();
+  for (const b of m.ep) {
+    const [id, x, y, z, vx, vy, vz, s] = b; pids.add(id);
+    let P = EPJ.get(id);
+    if (!P) { P = { mesh: new THREE.Mesh(GEO.orb, MATS.orb), sp: V3(), sv: V3() }; P.mesh.scale.setScalar(1.2 * s); scene.add(P.mesh); EPJ.set(id, P); }
+    P.sp.set(x, y, z); P.sv.set(vx, vy, vz); P.rt = snapT;
+  }
+  for (const [id, P] of EPJ) if (!pids.has(id)) { scene.remove(P.mesh); EPJ.delete(id); }
+  // лут
+  const lids = new Set();
+  for (const l of m.lo) {
+    const [id, x, y, z] = l; lids.add(id);
+    let L = LOOT.get(id);
+    if (!L) { L = { mesh: new THREE.Mesh(GEO.gem, MATS.gem), tp: V3(x, y, z) }; L.mesh.position.set(x, y, z); scene.add(L.mesh); LOOT.set(id, L); }
+    L.tp.set(x, y, z);
+  }
+  for (const [id, L] of LOOT) if (!lids.has(id)) { scene.remove(L.mesh); LOOT.delete(id); }
+  // пожары
+  const fids = new Set();
+  for (const f of m.fi) {
+    const [id, slot, kind, hp] = f; fids.add(id);
+    let F = FIRES.get(id);
+    if (!F) { F = makeFire(slot, kind); FIRES.set(id, F); }
+    F.hp = hp;
+  }
+  for (const [id, F] of FIRES) if (!fids.has(id)) { SH.inner.remove(F.g); FIRES.delete(id); }
+  if (panelOpen) renderPanel(false);
+}
+function setSeat(s) {
+  const prev = me.seat; me.seat = s;
+  if (s) { me.tyaw = 0; me.tpitch = 0; stick.set(0, 0); }
+  if (s === 'pilot') { PS.active = false; }
+  if (!s && prev) { const sp = SEATS[prev]; me.p.set(sp.p[0] * (prev === 'pilot' ? 1 : 0.62), 0, sp.p[2] + (prev === 'pilot' ? 1.4 : 0)); me.yaw = prev === 'pilot' ? Math.PI : sp.yaw + Math.PI; }
+}
+function onEvent(e) {
+  const camW = camera.getWorldPosition(V3());
+  const distF = p => clamp(1 - camW.distanceTo(V3(...p)) / 1500, 0, 1);
+  switch (e.k) {
+    case 'boom': { const p = V3(...e.p), c = new THREE.Color(CREATURE_COLORS[e.ty] || 0xff8a3d); explode(p, e.s, c); sfx.boom(e.s / 3, distF(e.p)); break; }
+    case 'spark': fx.burst(V3(...e.p), 10, new THREE.Color(0xff8adf), 30, 0.4, 1.2); break;
+    case 'hit': if (e.sh) { sfx.shieldHit(); dmgFlash = Math.max(dmgFlash, 0.25); shieldFlash = 1; } else { sfx.hit(e.d > 15); dmgFlash = Math.max(dmgFlash, Math.min(1, e.d / 25)); } shake = Math.min(1.4, shake + e.d / 22); break;
+    case 'coin': sfx.coin(); break;
+    case 'fixed': sfx.fixed(); { const s = FIRE_SLOTS[e.slot]; for (let i = 0; i < 25; i++) fxSN.emit(s[0], 0.4, s[2], (Math.random() - 0.5) * 2, 1 + Math.random() * 2, (Math.random() - 0.5) * 2, new THREE.Color(0xdfe8f0), 1.4, 0.6, 2, 1); } break;
+    case 'roar': sfx.roar(e.big, distF(e.p)); break;
+    case 'done': sfx.done(); break;
+    case 'buy': sfx.buy(); break;
+    case 'sector': toast('СЕКТОР ' + e.n + (e.n % 3 === 0 ? ' — ВНИМАНИЕ: БОСС' : ''), e.n % 3 === 0 ? 'red' : 'green'); break;
+    case 'toast': toast(e.m, e.c); if (e.c === 'red' && /ПОЖАР|ПРОБОИНА/.test(e.m)) sfx.alarm(); break;
+  }
+}
+let shieldFlash = 0;
+function explode(p, s, c) {
+  const k = Math.sqrt(s);
+  fx.burst(p, 30 + s * 6, c, 25 * k, 1.1, 1.4 * k, 1.5, 2);
+  fx.burst(p, 16, new THREE.Color(0xffffff), 40 * k, 0.35, 1 * k, 0, 3);
+  fx.emit(p.x, p.y, p.z, 0, 0, 0, new THREE.Color(0xfff0e0), 0.25, s * 5, 1);
+  fxN.burst(p, 10 + s * 2, c.clone().multiplyScalar(0.6), 18 * k, 1.8, 1.2 * k, 0.5, 1.2);
+}
+
+// ---------- геометрия снарядов ----------
+const GEO = { bolt: new THREE.SphereGeometry(1, 8, 6), orb: new THREE.SphereGeometry(1, 14, 10), gem: new THREE.OctahedronGeometry(1.3), rocket: new THREE.CapsuleGeometry(0.35, 1.6, 4, 8) };
+const MATS = {
+  nose: new THREE.MeshBasicMaterial({ color: 0xffb067, toneMapped: false }), tur: new THREE.MeshBasicMaterial({ color: 0x8ffcff, toneMapped: false }),
+  orb: new THREE.MeshBasicMaterial({ color: 0xff5fb0, toneMapped: false }), rk: new THREE.MeshStandardMaterial({ color: 0xeeeeee, emissive: 0xff8a3d, emissiveIntensity: 1 }),
+  gem: new THREE.MeshStandardMaterial({ color: 0x8ffcff, emissive: 0x3fd6ff, emissiveIntensity: 2, roughness: 0.2 }),
+};
+MATS.orb.color.multiplyScalar(2.2); MATS.nose.color.multiplyScalar(2); MATS.tur.color.multiplyScalar(2);
+function spawnBolt(p, vel, k, mine) {
+  const mesh = new THREE.Mesh(k === 'rk' ? GEO.rocket : GEO.bolt, k === 'nose' ? MATS.nose : k === 'rk' ? MATS.rk : MATS.tur);
+  if (k !== 'rk') mesh.scale.set(0.22, 0.22, k === 'nose' ? 2.6 : 2); else mesh.rotation.x = Math.PI / 2;
+  mesh.position.copy(p); scene.add(mesh);
+  const b = { mesh, p: p.clone(), v: vel.clone(), life: k === 'rk' ? 4 : 1.4, k, mine, dmg: 0, tgt: null };
+  if (k !== 'rk') mesh.lookAt(p.clone().add(vel));
+  bolts.push(b); return b;
+}
+const upg = () => (snap && snap.up) || { gun: 0, rate: 0, rockets: 0, repair: 0, engine: 0 };
+function fireWeapons(dt) {
+  PS.gunCd -= dt; PS.rkCd -= dt;
+  if (!document.pointerLockElement || me.down) return;
+  const u = upg();
+  const shipV = me.seat === 'pilot' && PS.active ? PS.v : (snap ? V3(...snap.ship.v) : V3());
+  if (me.seat === 'pilot' && PS.active && mouse.l && PS.gunCd <= 0) {
+    PS.gunCd = 1 / (6.5 * (1 + 0.18 * u.rate));
+    const fwd = V3(0, 0, -1).applyQuaternion(PS.q);
+    for (const sx of [-1, 1]) {
+      const o = SH.group.localToWorld(V3(sx * 1.8, 0.1, -10.5));
+      const vel = fwd.clone().multiplyScalar(680).add(shipV);
+      const b = spawnBolt(o, vel, 'nose', true); b.dmg = 14 * (1 + 0.25 * u.gun);
+      send({ t: 'shot', o: o.toArray().map(r2), d: vel.toArray().map(r2), k: 'nose' });
+    }
+    sfx.laser(1);
+  }
+  if (me.seat === 'pilot' && PS.active && mouse.r && u.rockets > 0 && PS.rkCd <= 0) {
+    PS.rkCd = 2.6;
+    const fwd = V3(0, 0, -1).applyQuaternion(PS.q);
+    const tgt = pickTarget(PS.p, fwd);
+    for (let i = 0; i < u.rockets; i++) {
+      const o = SH.group.localToWorld(V3((i - (u.rockets - 1) / 2) * 2.5, -1.2, -6));
+      const b = spawnBolt(o, fwd.clone().multiplyScalar(180).add(shipV).add(V3((Math.random() - 0.5) * 30, (Math.random() - 0.5) * 30, 0).applyQuaternion(PS.q)), 'rk', true);
+      b.dmg = 95; b.tgt = tgt;
+    }
+    sfx.rocket();
+  }
+  if ((me.seat === 'tl' || me.seat === 'tr') && mouse.l && PS.gunCd <= 0) {
+    PS.gunCd = 1 / (9 * (1 + 0.2 * u.rate));
+    const piv = SH.turretGuns[me.seat], dir = camera.getWorldDirection(V3());
+    tGun = (tGun + 1) % 2;
+    const o = piv.localToWorld(V3(tGun ? 0.22 : -0.22, 0, 2.3));
+    const vel = dir.multiplyScalar(760).add(shipV);
+    const b = spawnBolt(o, vel, 'tur', true); b.dmg = 9 * (1 + 0.22 * u.gun);
+    send({ t: 'shot', o: o.toArray().map(r2), d: vel.toArray().map(r2), k: 'tur' });
+    sfx.turret();
+  }
+}
+const r2 = x => Math.round(x * 100) / 100;
+function pickTarget(p, fwd) {
+  let best = null, bs = -1;
+  for (const [id, E] of ENT) { const d = E.o.group.position.clone().sub(p); const l = d.length(); if (l > 1400) continue; const c = d.normalize().dot(fwd); if (c > 0.6 && c - l / 4000 > bs) { bs = c - l / 4000; best = id; } }
+  return best;
+}
+const _seg = V3(), _toE = V3();
+function updateBolts(dt) {
+  for (let i = bolts.length - 1; i >= 0; i--) {
+    const b = bolts[i];
+    b.life -= dt;
+    if (b.k === 'rk') {
+      const E = b.tgt && ENT.get(b.tgt);
+      if (E) { const want = E.o.group.position.clone().sub(b.p).normalize().multiplyScalar(320); b.v.lerp(want, 1 - Math.exp(-dt * 3)); }
+      else b.v.multiplyScalar(1 + dt * 0.5);
+      b.mesh.lookAt(b.p.clone().add(b.v)); b.mesh.rotateX(Math.PI / 2);
+      fx.emit(b.p.x, b.p.y, b.p.z, (Math.random() - 0.5) * 4, (Math.random() - 0.5) * 4, (Math.random() - 0.5) * 4, new THREE.Color(0xffa060), 0.5, 1.6, 1.5, 1);
+    }
+    const prev = b.p.clone();
+    b.p.addScaledVector(b.v, dt); b.mesh.position.copy(b.p);
+    let hit = false;
+    if (b.life > 0) {
+      _seg.copy(b.p).sub(prev); const sl = _seg.length(); _seg.divideScalar(sl || 1);
+      for (const [id, E] of ENT) {
+        const c = E.o.group.position, R = CREATURE_RAD[E.ty] * (E.ty === 'je' ? 0.9 : 1) + (b.k === 'rk' ? 2 : 0.6);
+        _toE.copy(c).sub(prev); const t = clamp(_toE.dot(_seg), 0, sl);
+        const closest = prev.clone().addScaledVector(_seg, t);
+        if (closest.distanceToSquared(c) < R * R) {
+          hit = true;
+          if (b.mine) {
+            if (b.k === 'rk') { for (const [id2, E2] of ENT) { const d = E2.o.group.position.distanceTo(closest); if (d < 34) send({ t: 'hit', id: id2, d: Math.round(b.dmg * (1 - d / 50)) }); } }
+            else send({ t: 'hit', id, d: Math.round(b.dmg) });
+          }
+          E.o.pop = 1;
+          const col = new THREE.Color(b.k === 'nose' ? 0xffb067 : b.k === 'rk' ? 0xffa040 : 0x8ffcff);
+          fx.burst(closest, b.k === 'rk' ? 40 : 7, col, b.k === 'rk' ? 50 : 22, b.k === 'rk' ? 0.8 : 0.3, b.k === 'rk' ? 3 : 0.9, 1, 2.5);
+          if (b.k === 'rk') sfx.boom(1.5, 0.8);
+          break;
+        }
+      }
+    }
+    if (hit || b.life <= 0) { scene.remove(b.mesh); bolts.splice(i, 1); }
+  }
+}
+
+// ---------- огонь / пробоины ----------
+const fireMat = new THREE.MeshBasicMaterial({ color: 0xff7a2a, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
+const fireMat2 = new THREE.MeshBasicMaterial({ color: 0xffe08a, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
+const breachMat = new THREE.MeshBasicMaterial({ color: 0x8ffcff, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, side: THREE.DoubleSide });
+function makeFire(slot, kind) {
+  const s = FIRE_SLOTS[slot], g = new THREE.Group(); g.position.set(s[0], 0, s[2]); SH.inner.add(g);
+  const parts = [];
+  if (kind === 'fire') {
+    for (let i = 0; i < 4; i++) { const c = new THREE.Mesh(new THREE.ConeGeometry(0.35 + i * 0.05, 1.2, 10, 1, true), i % 2 ? fireMat2 : fireMat); c.position.set((Math.random() - 0.5) * 0.6, 0.5, (Math.random() - 0.5) * 0.6); g.add(c); parts.push(c); }
+    const l = new THREE.PointLight(0xff7a2a, 4, 6, 1.5); l.position.y = 1; g.add(l); parts.light = l;
+  } else {
+    const disc = new THREE.Mesh(new THREE.CircleGeometry(0.55, 24), new THREE.MeshBasicMaterial({ color: 0x000000 })); disc.rotation.x = -Math.PI / 2; disc.position.y = 0.02; g.add(disc);
+    for (let i = 0; i < 2; i++) { const r = new THREE.Mesh(new THREE.TorusGeometry(0.6 + i * 0.18, 0.04, 6, 30), breachMat); r.rotation.x = -Math.PI / 2; r.position.y = 0.05 + i * 0.05; g.add(r); parts.push(r); }
+  }
+  return { g, kind, slot, parts, hp: 100 };
+}
+function updateFires(dt, t) {
+  let any = false;
+  for (const F of FIRES.values()) {
+    any = true; const s = FIRE_SLOTS[F.slot], k = 0.4 + F.hp / 100 * 0.6;
+    if (F.kind === 'fire') {
+      F.parts.forEach((c, i) => { const f = 0.8 + Math.sin(t * 17 + i * 2) * 0.2 + Math.random() * 0.1; c.scale.set(k, f * k * (1.2 + i * 0.2), k); c.position.y = 0.5 * f * k; });
+      F.parts.light.intensity = (3 + Math.random() * 2) * k;
+      if (Math.random() < dt * 30) fxS.emit(s[0] + (Math.random() - 0.5) * 0.8, 0.3, s[2] + (Math.random() - 0.5) * 0.8, (Math.random() - 0.5) * 0.3, 1.5 + Math.random(), (Math.random() - 0.5) * 0.3, new THREE.Color(0xff9a3a), 0.7, 0.35, 0.5, 0.5);
+      if (Math.random() < dt * 8) fxSN.emit(s[0], 1.4, s[2], (Math.random() - 0.5) * 0.4, 0.8, (Math.random() - 0.5) * 0.4, new THREE.Color(0x2a2630), 2, 0.6, 3, 0.4);
+    } else {
+      F.parts.forEach((r, i) => { r.rotation.z = t * (i ? -3 : 4); r.scale.setScalar(k * (1 + Math.sin(t * 9 + i) * 0.08)); });
+      if (Math.random() < dt * 40) { const a = Math.random() * 6.28, d = 1.5 + Math.random(); fxS.emit(s[0] + Math.cos(a) * d, 0.2 + Math.random() * 1.8, s[2] + Math.sin(a) * d, -Math.cos(a) * d * 1.8, -1, -Math.sin(a) * d * 1.8, new THREE.Color(0xbff4ff), 0.5, 0.08, 0, 0); }
+      if (Math.random() < dt * 12) fxS.emit(s[0], 0.1, s[2], (Math.random() - 0.5) * 3, 2, (Math.random() - 0.5) * 3, new THREE.Color(0x8ffcff), 0.3, 0.12, 0, 1);
+    }
+  }
+  SH.alarm.intensity = any ? (Math.sin(t * 6) > 0 ? 6 : 0.5) : 0;
+  const breaches = [...FIRES.values()].filter(f => f.kind === 'breach').length, fires = FIRES.size - breaches;
+  $('alarm').style.display = any && !docked ? 'block' : 'none';
+  $('alarm').textContent = (fires ? 'ПОЖАР ×' + fires + '  ' : '') + (breaches ? 'ПРОБОИНА ×' + breaches + ' — КИСЛОРОД!' : '');
+  alarmT -= dt; if (any && !docked && alarmT <= 0) { alarmT = 2.2; sfx.alarm(); }
+}
+
+// ---------- ходьба ----------
+function walkable(x, z) {
+  const rects = docked ? WALK.concat(WALK_DOCK) : WALK;
+  let ok = false;
+  for (const r of rects) if (x >= r[0] && x <= r[1] && z >= r[2] && z <= r[3]) { ok = true; break; }
+  if (!ok) return false;
+  for (const o of OBST) if (Math.hypot(x - o[0], z - o[1]) < o[2] + 0.3) return false;
+  return true;
+}
+function updateWalk(dt) {
+  if (!walkable(me.p.x, me.p.z)) me.p.set(0, 0, 8);
+  const f = (keys.KeyW ? 1 : 0) - (keys.KeyS ? 1 : 0), r = (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0);
+  me.moving = (f || r) && !me.down && !me.dead && !chatOpen;
+  if (me.moving) {
+    const sp = (keys.ShiftLeft ? 6.2 : 4.2) * dt;
+    const fx_ = -Math.sin(me.yaw), fz = -Math.cos(me.yaw), rx = Math.cos(me.yaw), rz = -Math.sin(me.yaw);
+    let dx = fx_ * f + rx * r, dz = fz * f + rz * r; const l = Math.hypot(dx, dz); dx = dx / l * sp; dz = dz / l * sp;
+    const nx = me.p.x + dx, nz = me.p.z + dz;
+    if (walkable(nx, nz)) me.p.set(nx, 0, nz); else if (walkable(nx, me.p.z)) me.p.x = nx; else if (walkable(me.p.x, nz)) me.p.z = nz;
+    me.stepT += dt * (keys.ShiftLeft ? 1.5 : 1); if (me.stepT > 0.38 && me.y <= 0) { me.stepT = 0; sfx.step(); }
+  }
+  me.vy -= 13 * dt; me.y = Math.max(0, me.y + me.vy * dt); if (me.y <= 0) me.vy = 0;
+}
+
+// ---------- взаимодействие ----------
+let promptAct = null, holdKind = null, fixAcc = 0, fixTarget = null, revAcc = 0, revTarget = null, netT = 0;
+function mateList() { return [...mates.entries()].map(([id, a]) => ({ id, a, st: a.st })); }
+function findInteract() {
+  if (me.down || me.dead) return null;
+  if (me.seat) return { kind: 'stand', text: '<kbd>E</kbd>встать' + (me.seat === 'pilot' ? '  ·  <kbd>G</kbd>' + (docked ? 'отстыковка' : 'стыковка') : '') };
+  const px = me.p.x, pz = me.p.z;
+  for (const m of mateList()) if (m.st && m.st.dn) { const d = Math.hypot(m.a.group.position.x - px, m.a.group.position.z - pz); if (d < 2.2) return { kind: 'revive', id: m.id, text: '<kbd>E</kbd>держи — поднять ' + esc(m.st.n) + ' (' + Math.round(m.st.rv * 100) + '%)' }; }
+  let bestF = null, bd = 2.6;
+  for (const [id, F] of FIRES) { const s = FIRE_SLOTS[F.slot], d = Math.hypot(s[0] - px, s[2] - pz); if (d < bd) { bd = d; bestF = { id, F }; } }
+  if (bestF) return { kind: 'fix', id: bestF.id, F: bestF.F, text: '<kbd>F</kbd>держи — ' + (bestF.F.kind === 'fire' ? 'тушить пожар' : 'заварить пробоину') + ' (' + Math.round(bestF.F.hp) + '%)' };
+  const taken = s => mateList().some(m => m.st && m.st.s === s);
+  for (const k in SEATS) { const s = SEATS[k]; if (Math.hypot(s.p[0] - px, s.p[2] - pz) < 1.7) return taken(k) ? { kind: 'none', text: 'Место занято напарником' } : { kind: 'sit', seat: k, text: '<kbd>E</kbd>' + s.label }; }
+  if (docked) for (const t of TERMINALS) if (Math.hypot(t.p[0] - px, t.p[2] - pz) < 2.3) return { kind: 'term', id: t.id, text: '<kbd>E</kbd>' + t.label };
+  if (docked && Math.abs(pz - 8) < 1.2 && Math.abs(px) > 2.2 && Math.abs(px) < 3.6) return { kind: 'none', text: 'Шлюз открыт → станция' };
+  return null;
+}
+function onUse() {
+  const a = promptAct; if (!a) return;
+  if (a.kind === 'stand') { send({ t: 'stand' }); me.seatLock = now() + 0.6; setSeat(null); }
+  else if (a.kind === 'sit') { send({ t: 'sit', s: a.seat }); me.seatLock = now() + 0.6; setSeat(a.seat); }
+  else if (a.kind === 'term') openPanel(a.id);
+}
+function updateInteract(dt) {
+  promptAct = findInteract();
+  const pr = $('prompt');
+  if (promptAct && !panelOpen) { pr.style.display = 'block'; pr.innerHTML = promptAct.text; } else pr.style.display = 'none';
+  // тушение
+  const tooling = keys.KeyF && !me.seat && !me.down && !me.dead && !panelOpen && !chatOpen;
+  me.tool = tooling; setHiss(tooling);
+  if (tooling) {
+    const tip = vm.tip.getWorldPosition(V3()), tl = SH.group.worldToLocal(tip.clone()), dir = camera.getWorldDirection(V3()).transformDirection(new THREE.Matrix4().copy(SH.group.matrixWorld).invert());
+    for (let i = 0; i < 3; i++) fxSN.emit(tl.x, tl.y, tl.z, dir.x * 6 + (Math.random() - 0.5) * 1.5, dir.y * 6 + (Math.random() - 0.5) * 1.5, dir.z * 6 + (Math.random() - 0.5) * 1.5, new THREE.Color(0xeef6ff), 0.5, 0.18, 2.5, 3);
+    if (promptAct && promptAct.kind === 'fix') { fixTarget = promptAct.id; fixAcc += dt * 30 * (1 + 0.35 * (upg().repair || 0)); }
+  }
+  // поднимание
+  if (keys.KeyE && promptAct && promptAct.kind === 'revive') { revTarget = promptAct.id; revAcc += dt / 3; $('holdbar').style.display = 'block'; $('holdbar').firstChild.style.width = Math.round((mates.get(revTarget).st.rv || 0) * 100) + '%'; }
+  else $('holdbar').style.display = 'none';
+  netT -= dt;
+  if (netT <= 0) { netT = 0.1; if (fixAcc > 0 && fixTarget) send({ t: 'fix', id: fixTarget, a: Math.round(fixAcc * 10) / 10 }); fixAcc = 0; if (revAcc > 0 && revTarget) send({ t: 'revive', id: revTarget, a: Math.round(revAcc * 1000) / 1000 }); revAcc = 0; }
+}
+
+// ---------- панели станции ----------
+const SHOPDEF = {
+  gun: ['gun', 'Калибр', 'Урон всех пушек +25%'], rate: ['rate', 'Скорострельность', 'Пушки и турели стреляют чаще'], hull: ['hull', 'Бронекорпус', 'Макс. прочность +70'],
+  shield: ['shield', 'Щит', 'Ёмкость и регенерация щита'], engine: ['engine', 'Двигатели', 'Скорость корабля +15%'], magnet: ['magnet', 'Магнит лута', 'Притягивает ◆ издалека'],
+  fireproof: ['fire', 'Огнеупор', 'Реже пожары и пробоины'], rockets: ['rocket', 'Ракеты', 'ПКМ пилота: самонаводящиеся ракеты (+1 за уровень)'], repair: ['wrench', 'Ремкомплект', 'Быстрее тушишь и чинишь'], medbay: ['med', 'Медблок', 'Экипаж быстрее лечится'],
+};
+const SHOPMAX = { gun: 5, rate: 5, hull: 5, shield: 5, engine: 4, magnet: 4, fireproof: 4, rockets: 3, repair: 4, medbay: 4 };
+const SHOPBASE = { gun: 120, rate: 120, hull: 100, shield: 140, engine: 90, magnet: 60, fireproof: 110, rockets: 200, repair: 80, medbay: 120 };
+let panelHash = '';
+function openPanel(id) { panelOpen = id; document.exitPointerLock(); show('panel'); renderPanel(true); }
+function closePanel() { panelOpen = null; show(''); lockPointer(); }
+$('pClose').onclick = closePanel;
+function renderPanel(force) {
+  if (!snap) return;
+  const hash = panelOpen + JSON.stringify([snap.cr, snap.up, snap.mi && snap.mi.label, Math.round(snap.ship.hull), snap.fi.length]);
+  if (!force && hash === panelHash) return; panelHash = hash;
+  $('pCr').textContent = snap.cr;
+  const B = $('pBody');
+  if (panelOpen === 'shop') {
+    $('pTitle').textContent = 'Магазин улучшений';
+    B.innerHTML = '<div class="grid">' + Object.keys(SHOPDEF).map(k => {
+      const [ic, nm, ds] = SHOPDEF[k], lvl = snap.up[k], max = SHOPMAX[k], price = Math.round(SHOPBASE[k] * Math.pow(1.55, lvl));
+      const can = lvl < max && snap.cr >= price;
+      return `<div class="it"><div class="row" style="justify-content:space-between"><span class="ico" style="background:linear-gradient(160deg,#ffb067,#d95f22)">${icon(ic, '#2a1404')}</span><div class="pips">${Array.from({ length: max }, (_, i) => `<i class="${i < lvl ? 'on' : ''}"></i>`).join('')}</div></div><div class="nm">${nm}</div><div class="ds">${ds}</div><button class="btn${can ? '' : ' ghost'}" data-buy="${k}" ${lvl >= max ? 'disabled' : ''}>${lvl >= max ? 'МАКС' : '◆ ' + price}</button></div>`;
+    }).join('') + '</div>';
+    B.querySelectorAll('[data-buy]').forEach(b => b.onclick = () => send({ t: 'buy', k: b.dataset.buy }));
+  } else if (panelOpen === 'repair') {
+    $('pTitle').textContent = 'Ремонтный док';
+    const miss = Math.max(0, snap.ship.hm - snap.ship.hull), cost = Math.ceil(miss * 0.6);
+    B.innerHTML = `<div class="it" style="max-width:520px"><span class="ico" style="background:linear-gradient(160deg,#ffe08a,#d9a422)">${icon('wrench', '#2a1404')}</span><div class="nm">Корпус: ${Math.round(snap.ship.hull)} / ${snap.ship.hm}</div><div class="ds">Бригада дока залатает корпус и потушит все пожары на борту. Пожаров сейчас: ${snap.fi.length}.</div><button class="btn" id="doRep" ${miss <= 0 && !snap.fi.length ? 'disabled' : ''}>${miss <= 0 && !snap.fi.length ? 'Всё целое' : 'Починить за ◆ ' + cost}</button></div>`;
+    const b = $('doRep'); if (b) b.onclick = () => send({ t: 'repairship' });
+  } else if (panelOpen === 'med') {
+    $('pTitle').textContent = 'Медотсек';
+    B.innerHTML = `<div class="it" style="max-width:520px"><span class="ico" style="background:linear-gradient(160deg,#b4ffd2,#3fd98a)">${icon('med', '#05281a')}</span><div class="nm">Полное лечение экипажа</div><div class="ds">Бесплатно. Погибшие возрождаются при каждой стыковке.</div><button class="btn teal" id="doHeal">Вылечить</button></div>`;
+    $('doHeal').onclick = () => send({ t: 'heal' });
+  } else if (panelOpen === 'missions') {
+    $('pTitle').textContent = 'Терминал миссий · Сектор ' + snap.sec;
+    if (snap.mi) {
+      B.innerHTML = `<div class="it" style="max-width:560px"><span class="ico" style="background:linear-gradient(160deg,#a8fbff,#2bb7c7)">${icon('target', '#05282c')}</span><div class="nm">Текущая: ${esc(snap.mi.label)}</div><div class="ds">${snap.mi.done ? 'Выполнено! Награда выдаётся при стыковке.' : 'Пилот — за штурвал и <b>G</b> для отстыковки. Напарник — к турели.'}</div></div>`;
+    } else {
+      const ic = { clear: 'clear', nests: 'nest', defend: 'defend', boss: 'boss' };
+      B.innerHTML = '<div class="mis">' + snap.of.map((o, i) => `<div class="it"><span class="ico" style="background:linear-gradient(160deg,${o.type === 'boss' ? '#ff9fb0,#e0435a' : '#a8fbff,#2bb7c7'})">${icon(ic[o.type], '#1a0b10')}</span><div class="nm">${esc(o.label)}</div><div class="ds">${esc(o.desc)}</div><div class="row" style="justify-content:space-between"><b style="font-family:Unbounded;color:var(--orange2)">+◆ ${o.reward}</b><button class="btn" data-mi="${i}">Взять</button></div></div>`).join('') + '</div><p class="hint" style="margin-top:12px">Сложность растёт с каждым сектором. Каждый 3-й сектор — босс.</p>';
+      B.querySelectorAll('[data-mi]').forEach(b => b.onclick = () => { send({ t: 'mission', i: +b.dataset.mi }); setTimeout(closePanel, 200); });
+    }
+  }
+}
+
+// ---------- пилотирование ----------
+const _dq = new THREE.Quaternion(), _e = new THREE.Euler();
+function updatePilot(dt) {
+  const u = upg();
+  stick.multiplyScalar(Math.exp(-dt * 2.4));
+  const roll = (keys.KeyA ? 1 : 0) - (keys.KeyD ? 1 : 0);
+  const tw = V3(-stick.y * 1.35, -stick.x * 1.55, roll * 2.0);
+  PS.w.lerp(tw, 1 - Math.exp(-dt * 5));
+  _e.set(PS.w.x * dt, PS.w.y * dt, PS.w.z * dt, 'XYZ'); _dq.setFromEuler(_e); PS.q.multiply(_dq).normalize();
+  if (keys.KeyW) PS.thr = Math.min(1, PS.thr + dt * 0.8); if (keys.KeyS) PS.thr = Math.max(-0.3, PS.thr - dt * 0.8);
+  const boosting = keys.ShiftLeft && PS.boost > 0 && PS.thr > 0.1;
+  PS.boost = clamp(PS.boost + (boosting ? -32 : 14) * dt, 0, 100);
+  const maxS = 105 * (1 + 0.15 * u.engine) * (boosting ? 1.9 : 1);
+  const fwd = V3(0, 0, -1).applyQuaternion(PS.q);
+  PS.v.lerp(fwd.multiplyScalar(PS.thr * maxS), 1 - Math.exp(-dt * (boosting ? 2 : 1.3)));
+  PS.p.addScaledVector(PS.v, dt);
+  PS.boosting = boosting;
+  // столкновения
+  PS.ramCd -= dt;
+  const bump = (c, r) => { const d = PS.p.clone().sub(c), l = d.length(); if (l < r) { d.normalize(); PS.p.copy(c).addScaledVector(d, r); const vn = PS.v.dot(d); if (vn < 0) { const spd = -vn; PS.v.addScaledVector(d, -vn * 1.5); if (spd > 18 && PS.ramCd <= 0) { PS.ramCd = 0.6; send({ t: 'ram', d: Math.round(spd * 0.3) }); shake = 1.2; } } } };
+  for (const r of space.rocks) if (Math.abs(r.p.x - PS.p.x) < r.r + 12 && Math.abs(r.p.z - PS.p.z) < r.r + 12) bump(r.p, r.r + 7);
+  bump(V3(), 63);
+  { const rr = Math.hypot(PS.p.x, PS.p.y) - 140, dz = PS.p.z; if (Math.hypot(rr, dz) < 21) { const a = Math.atan2(PS.p.y, PS.p.x); bump(V3(Math.cos(a) * 140, Math.sin(a) * 140, 0), 21); } }
+  if (PS.p.length() > 2800) PS.v.addScaledVector(PS.p.clone().normalize(), -60 * dt);
+}
+
+// ---------- HUD ----------
+const markPool = [];
+function marker(i) { if (!markPool[i]) { const d = document.createElement('div'); d.className = 'mk'; d.innerHTML = '<div class="d"></div><span></span>'; $('marks').appendChild(d); markPool[i] = d; } return markPool[i]; }
+const _pv = V3();
+function placeMark(i, wp, text, color, cls) {
+  const d = marker(i); _pv.copy(wp).project(camera);
+  const behind = _pv.z > 1;
+  let x = _pv.x, y = _pv.y; if (behind) { x = -x; y = -y; }
+  const edge = behind || Math.abs(x) > 0.95 || Math.abs(y) > 0.9;
+  if (edge) { const m = Math.max(Math.abs(x) / 0.95, Math.abs(y) / 0.9); x /= m; y /= m; }
+  d.style.display = 'flex'; d.className = 'mk ' + (cls || ''); d.style.color = color;
+  d.style.left = ((x + 1) / 2 * innerWidth) + 'px'; d.style.top = ((1 - y) / 2 * innerHeight) + 'px';
+  d.lastChild.textContent = text; d.style.opacity = edge ? 0.7 : 1;
+}
+function updateHUD(dt) {
+  if (!snap) return;
+  const s = snap.ship;
+  const setBar = (b, t, v, m, lab) => { $(b).style.width = clamp(v / m * 100, 0, 100) + '%'; $(t).textContent = lab + ' ' + Math.round(v) + ' / ' + m; };
+  setBar('bHull', 'tHull', s.hull, s.hm, 'КОРПУС'); setBar('bSh', 'tSh', s.sh, s.shm, 'ЩИТ'); setBar('bHp', 'tHp', me.hp, 100, me.down ? 'ЛЕЖИШЬ' : 'ЗДОРОВЬЕ');
+  const def = snap.mi && snap.mi.type === 'defend' && snap.mi.act; $('stBar').style.display = def ? 'grid' : 'none'; if (def) setBar('bSt', 'tSt', snap.st.hp, snap.st.hm, 'СТАНЦИЯ');
+  const mate = mateList()[0];
+  $('mate').style.display = mate ? 'flex' : 'none';
+  if (mate && mate.st) { $('mName').textContent = mate.st.n; $('mSt').innerHTML = mate.st.dd ? '<span style="color:var(--red)">погиб</span>' : mate.st.dn ? '<span style="color:var(--red)">ЛЕЖИТ — подними! ' + mate.st.bl + 'с</span>' : ({ pilot: 'за штурвалом', tl: 'левая турель', tr: 'правая турель' }[mate.st.s] || 'на ногах') + ' · ' + mate.st.hp + '♥'; }
+  $('cr').textContent = snap.cr; $('sec').textContent = snap.sec;
+  const mi = snap.mi; let t = '', p = '', pr = 0;
+  if (!mi) { t = docked ? 'Выберите миссию' : 'Нет миссии'; p = docked ? 'Терминал в правом крыле станции (через шлюз)' : 'Вернитесь на станцию'; }
+  else if (!mi.act) { t = mi.label; p = 'Пилот: G — отстыковка'; }
+  else if (mi.done) { t = 'Миссия выполнена!'; p = 'Летите к доку станции и стыкуйтесь (G)'; pr = 1; }
+  else { t = mi.label; pr = mi.prog / mi.goal; p = mi.type === 'defend' ? 'Держитесь: ' + Math.max(0, mi.goal - mi.prog) + ' с' : mi.type === 'boss' ? 'Убейте Матку' : mi.prog + ' / ' + mi.goal; }
+  $('misT').textContent = t; $('misP').textContent = p; $('misB').style.width = (pr * 100) + '%';
+  // метки
+  let mi_ = 0;
+  if (!docked) {
+    placeMark(mi_++, DOCK_APPROACH, 'ДОК ' + Math.round(SH.group.position.distanceTo(DOCK_APPROACH)) + 'м', '#ffd05f');
+    if (mi && mi.marks) for (const m of mi.marks) placeMark(mi_++, V3(...m), 'ГНЕЗДО ' + Math.round(SH.group.position.distanceTo(V3(...m))) + 'м', '#7dffb0');
+    if (me.seat) for (const E of ENT.values()) { if (mi_ > 40) break; const d = E.o.group.position.distanceTo(SH.group.position); if (d < 900 || E.ty === 'bo') placeMark(mi_++, E.o.group.position, E.ty === 'bo' ? 'МАТКА ' + Math.round(E.hp / E.hm * 100) + '%' : E.ty === 'ne' ? Math.round(E.hp / E.hm * 100) + '%' : '', E.ty === 'bo' ? '#ff6fb5' : '#ff5a6a', E.ty === 'bo' || E.ty === 'ne' ? '' : 'en'); }
+  }
+  for (let i = mi_; i < markPool.length; i++) markPool[i].style.display = 'none';
+  // прицелы
+  const walking = !me.seat;
+  $('cross').style.display = walking && !me.down ? 'block' : 'none';
+  $('reticle').style.display = $('stick').style.display = me.seat === 'pilot' ? 'block' : 'none';
+  $('tcross').style.display = me.seat === 'tl' || me.seat === 'tr' ? 'block' : 'none';
+  if (me.seat === 'pilot') { $('stick').style.transform = `translate(${stick.x * 75}px,${stick.y * 75 * (SET.inv ? -1 : 1)}px)`; }
+  $('flight').style.display = me.seat === 'pilot' ? 'flex' : 'none';
+  if (me.seat === 'pilot') { const sp = PS.active ? PS.v.length() : 0; $('spd').textContent = Math.round(sp); $('thr').style.width = Math.max(0, PS.thr * 100) + '%'; $('boost').textContent = Math.round(PS.boost); $('rk').textContent = upg().rockets ? (PS.rkCd > 0 ? PS.rkCd.toFixed(1) : 'ГОТОВ') : '—'; }
+  // урон
+  dmgFlash = Math.max(0, dmgFlash - dt * 1.8); shieldFlash = Math.max(0, shieldFlash - dt * 3);
+  const lowHp = me.hp < 35 && !me.dead ? 0.35 + Math.sin(now() * 6) * 0.1 : 0;
+  $('dmg').style.boxShadow = `inset 0 0 ${120 + dmgFlash * 160}px rgba(255,40,60,${Math.max(dmgFlash * 0.8, lowHp)})` + (shieldFlash ? `, inset 0 0 120px rgba(95,246,255,${shieldFlash * 0.5})` : '');
+  $('downed').style.display = (me.down || me.dead) && phase === 'game' ? 'flex' : 'none';
+  if (me.down) { $('downed').firstChild.textContent = 'ТЫ ЛЕЖИШЬ'; $('downHint').textContent = 'Напарник должен подойти и держать E. Осталось: ' + me.bleed + ' с'; }
+  if (me.dead) { $('downed').firstChild.textContent = 'ТЫ ПОГИБ'; $('downHint').textContent = 'Возродишься, когда напарник пристыкуется к станции'; }
+}
+
+// ---------- кадр ----------
+let last = now(), menuT = 0, frame = 0;
+const camWorld = V3();
+function loop() {
+  requestAnimationFrame(loop);
+  const t = now(), dt = Math.min(0.05, t - last); last = t; frame++;
+  if (phase === 'game') gameFrame(dt, t); else menuFrame(dt, t);
+  // окружение
+  station.ring.rotation.z += dt * 0.04; station.dockRing.rotation.z -= dt * 0.5;
+  SH.holo.rotation.y += dt * 0.8; SH.holo.rotation.x += dt * 0.3;
+  SH.reactor.material.emissiveIntensity = 2.3 + Math.sin(t * 3) * 0.5;
+  camera.getWorldPosition(camWorld);
+  const dp = space.dust.geometry.attributes.position, a = dp.array;
+  for (let i = 0; i < a.length; i += 3) { for (let k = 0; k < 3; k++) { const c = k ? (k === 1 ? camWorld.y : camWorld.z) : camWorld.x; let r = a[i + k] - c; if (r > 200) a[i + k] -= 400; else if (r < -200) a[i + k] += 400; } }
+  dp.needsUpdate = true;
+  space.stars.position.copy(camWorld); space.nebula.position.copy(camWorld);
+  fx.update(dt); fxN.update(dt); fxS.update(dt); fxSN.update(dt);
+  composer.render(dt);
+}
+function menuFrame(dt, t) {
+  menuT += dt;
+  SH.hull.visible = true; SH.halls.visible = false; vm.group.visible = false; station.cradles.visible = false;
+  SH.group.position.lerp(DOCK_P.clone().add(V3(0, Math.sin(t * 0.6) * 0.4, 0)), 0.1); SH.group.quaternion.set(0, 1, 0, 0);
+  const a = menuT * 0.08;
+  camera.position.set(Math.sin(a) * 30 - 6, 7 + Math.sin(menuT * 0.13) * 3, Math.cos(a) * 30 + 2);
+  camera.lookAt(SH.group.localToWorld(V3(-4, 1, -2)));
+  for (const f of SH.flames) f.scale.set(1, 1, 0.3 + Math.sin(t * 30) * 0.05);
+  SH.outerDoors.forEach(d => d.position.z = 8);
+  setEngine(0, false, false);
+}
+function gameFrame(dt, t) {
+  if (!snap) return;
+  const age = t - snapT;
+  // корабль
+  const pilotActive = me.seat === 'pilot' && !snap.ship.dk && !snap.ship.dg && !me.down;
+  if (pilotActive && !PS.active) { PS.active = true; PS.p.copy(SH.group.position); PS.q.copy(SH.group.quaternion); PS.v.set(...snap.ship.v); PS.w.set(0, 0, 0); if (PS.v.length() > 1) PS.thr = 0.3; }
+  if (!pilotActive) PS.active = false;
+  if (PS.active) {
+    if (!chatOpen) updatePilot(dt); else { PS.p.addScaledVector(PS.v, dt); }
+    SH.group.position.copy(PS.p); SH.group.quaternion.copy(PS.q);
+    if (t - lastShip > 0.05) { lastShip = t; send({ t: 'ship', p: PS.p.toArray().map(r2), q: PS.q.toArray().map(x => Math.round(x * 1e5) / 1e5), v: PS.v.toArray().map(r2) }); }
+  } else {
+    const tp = V3(...snap.ship.p).addScaledVector(V3(...snap.ship.v), Math.min(age, 0.25));
+    const k = 1 - Math.exp(-dt * 14);
+    if (SH.group.position.distanceTo(tp) > 60) SH.group.position.copy(tp); else SH.group.position.lerp(tp, k);
+    SH.group.quaternion.slerp(new THREE.Quaternion(...snap.ship.q), k);
+  }
+  const shipSpeed = PS.active ? PS.v.length() : Math.hypot(...snap.ship.v);
+  const thr = PS.active ? Math.max(0, PS.thr) * (PS.boosting ? 1.8 : 1) : clamp(shipSpeed / 110, 0, 1.8);
+  for (const f of SH.flames) f.scale.set(1 + thr * 0.15, 1 + thr * 0.15, 0.2 + thr * 1.4 + Math.sin(t * 40) * 0.08);
+  setEngine(Math.min(1, thr), PS.boosting, !docked);
+  // локальный игрок
+  if (!me.seat && !me.down && !me.dead && !panelOpen) updateWalk(dt); else me.moving = false;
+  updateInteract(dt);
+  fireWeapons(dt);
+  // камера
+  const inTurret = me.seat === 'tl' || me.seat === 'tr';
+  SH.hull.visible = inTurret; station.cradles.visible = inTurret; SH.halls.visible = docked;
+  vm.group.visible = !me.seat && !me.down && !me.dead;
+  camera.rotation.order = 'YXZ';
+  let shx = 0, shy = 0;
+  shake = Math.max(0, shake - dt * 2.2); if (SET.shake && shake > 0) { shx = (Math.random() - 0.5) * shake * 0.12; shy = (Math.random() - 0.5) * shake * 0.12; }
+  if (me.down || me.dead) { camera.position.set(me.p.x, 0.35, me.p.z); camera.rotation.set(0.2, me.yaw, 0.6); }
+  else if (me.seat === 'pilot') { const c = SEATS.pilot.cam; camera.position.set(c[0] + shx, c[1] + shy, c[2]); camera.rotation.set(-0.04 + PS.w.x * 0.03, PS.w.y * 0.04, PS.w.z * 0.04); SH.stickTop.position.set(0.38 + stick.x * 0.08, 1.02, -8.05 + stick.y * 0.08); }
+  else if (inTurret) { const s = SEATS[me.seat], c = s.cam; camera.position.set(c[0] + shx, c[1] + shy, c[2]); camera.rotation.set(me.tpitch, s.yaw + me.tyaw, 0); }
+  else {
+    const bob = me.moving && me.y <= 0 ? Math.sin(t * (keys.ShiftLeft ? 14 : 10)) * 0.045 : 0;
+    camera.position.set(me.p.x + shx, 1.62 + me.y + bob + shy, me.p.z); camera.rotation.set(me.pitch, me.yaw, 0);
+    vm.group.position.set(Math.cos(t * 5) * (me.moving ? 0.015 : 0.003), bob * 0.5 + (me.tool ? 0.04 : 0), me.tool ? -0.05 : 0);
+    vm.r.rotation.x = me.tool ? -0.15 + Math.sin(t * 40) * 0.01 : 0;
+    vm.tip.scale.setScalar(me.tool ? 1.5 + Math.random() * 0.4 : 1);
+  }
+  camera.updateMatrixWorld();
+  // турели смотрят туда же, куда стрелок
+  for (const id of ['tl', 'tr']) {
+    const piv = SH.turretGuns[id];
+    if (me.seat === id) piv.lookAt(camera.localToWorld(V3(0, 0, -300)));
+    else { const m = mateList().find(m => m.st && m.st.s === id); if (m) { const yaw = SEATS[id].yaw + m.st.y, pi = m.st.pi; const d = V3(-Math.sin(yaw) * Math.cos(pi), Math.sin(pi), -Math.cos(yaw) * Math.cos(pi)); piv.lookAt(SH.group.localToWorld(piv.position.clone().addScaledVector(d, 300))); } }
+  }
+  // шлюзы
+  SH.outerDoors.forEach(d => { const want = docked ? 9.75 : 8; d.position.z += (want - d.position.z) * Math.min(1, dt * 3); });
+  // напарник
+  for (const a of mates.values()) {
+    const st = a.st; if (!st) continue;
+    a.group.visible = !st.dd;
+    let tp = V3(...st.p), yaw = st.y;
+    if (st.s) { const s = SEATS[st.s]; tp = V3(...s.p); yaw = s.yaw; if (st.s === 'pilot') tp.z += 0.05; }
+    a.group.position.lerp(tp, 1 - Math.exp(-dt * 12));
+    let dy = yaw - a.yawS; dy = Math.atan2(Math.sin(dy), Math.cos(dy)); a.yawS += dy * Math.min(1, dt * 12); a.group.rotation.y = a.yawS;
+    a.pose({ mv: st.mv && !st.s, seat: st.s, down: st.dn, tool: st.tl, pitch: st.pi }, dt);
+    if (st.tl && !st.s) { const wp = a.group.localToWorld(V3(0.42, 1.3, -0.8)); const lp = SH.group.worldToLocal(wp); const d = V3(-Math.sin(a.yawS), 0, -Math.cos(a.yawS)); fxSN.emit(lp.x, lp.y, lp.z, d.x * 5 + (Math.random() - 0.5), (Math.random() - 0.5), d.z * 5 + (Math.random() - 0.5), new THREE.Color(0xeef6ff), 0.5, 0.18, 2.5, 3); }
+  }
+  // твари
+  const shipPos = SH.group.position;
+  let near = 0;
+  for (const E of ENT.values()) {
+    const tp = E.sp.clone().addScaledVector(E.sv, Math.min(age, 0.3));
+    const g = E.o.group;
+    if (!E.init) { g.position.copy(tp); E.init = true; } else g.position.lerp(tp, 1 - Math.exp(-dt * 10));
+    animateCreature(E.o, dt, E.sv, shipPos, E.st);
+    if (g.position.distanceTo(shipPos) < 700) near++;
+  }
+  setIntensity(near > 0 && !docked ? 1 : 0);
+  for (const P of EPJ.values()) { P.mesh.position.copy(P.sp).addScaledVector(P.sv, age); if (Math.random() < dt * 20) fx.emit(P.mesh.position.x, P.mesh.position.y, P.mesh.position.z, 0, 0, 0, new THREE.Color(0xff5fb0), 0.4, 1.5 * P.mesh.scale.x, 0, 0); }
+  for (const L of LOOT.values()) { L.mesh.position.lerp(L.tp, 1 - Math.exp(-dt * 8)); L.mesh.rotation.y += dt * 3; L.mesh.rotation.x += dt; }
+  updateBolts(dt);
+  updateFires(dt, t);
+  updateHUD(dt);
+  // отправка аватара
+  if (t - lastAv > 0.05) {
+    lastAv = t;
+    const yaw = me.seat && me.seat !== 'pilot' ? me.tyaw : me.yaw, pi = me.seat && me.seat !== 'pilot' ? me.tpitch : me.pitch;
+    const sp = me.seat ? SEATS[me.seat].p : [me.p.x, 0, me.p.z];
+    send({ t: 'av', p: [r2(sp[0]), 0, r2(sp[2])], y: r2(yaw), pi: r2(pi), mv: me.moving ? 1 : 0, tl: me.tool ? 1 : 0 });
+  }
+}
+
+// ---------- старт ----------
+window.__g = { me, PS, send, SH, keys, stick, mouse };
+connect();
+$('whoName').textContent = myName;
+setTimeout(() => { $('loading').style.display = 'none'; show(myName ? 'sMenu' : 'sName'); if (!myName) $('nameIn').focus(); }, 300);
+loop();
