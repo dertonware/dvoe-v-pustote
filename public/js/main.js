@@ -4,7 +4,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
-import { FinalShader, makeSpaceEnv, sunFlare, Debris, Flashes, DmgNumbers } from './fx.js';
+import { FinalShader, makeSky, makeSpaceEnvFrom, SunFlare, SUN_DIR, makePlume, Debris, Flashes, DmgNumbers } from './fx.js';
 import { buildShip, buildStation, buildSpace, Particles, makeAvatar, makeViewModel, WALK, WALK_DOCK, OBST, SEATS, TERMINALS, FIRE_SLOTS, DOCK_P, DOCK_APPROACH } from './world.js';
 import { makeCreature, animateCreature, CREATURE_COLORS, CREATURE_RAD } from './creatures.js';
 import { initAudio, sfx, setVolume, setEngine, setHiss, setIntensity } from './audio.js';
@@ -23,11 +23,14 @@ const saveSet = () => { try { localStorage.setItem('dvp_set', JSON.stringify(SET
 let myName = ''; try { myName = localStorage.getItem('dvp_name') || ''; } catch { }
 
 // ---------- рендер ----------
-const renderer = new THREE.WebGLRenderer({ canvas: $('c'), antialias: true, powerPreference: 'high-performance' });
-renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.05;
+// логарифмическая глубина: и интерьер в 10 см, и планета в 8 км без мерцания поверхностей
+const renderer = new THREE.WebGLRenderer({ canvas: $('c'), antialias: true, powerPreference: 'high-performance', logarithmicDepthBuffer: true });
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.1;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
-const scene = new THREE.Scene(); scene.background = new THREE.Color(0x05040c);
-const camera = new THREE.PerspectiveCamera(SET.fov, innerWidth / innerHeight, 0.08, 16000);
+const scene = new THREE.Scene();
+const sky = makeSky(renderer);
+scene.background = sky; scene.backgroundIntensity = 0.8;
+const camera = new THREE.PerspectiveCamera(SET.fov, innerWidth / innerHeight, 0.06, 20000);
 // MSAA прямо в цепочке пост-обработки — без лесенок на краях
 const rt = new THREE.WebGLRenderTarget(innerWidth, innerHeight, { type: THREE.HalfFloatType, samples: 4 });
 const composer = new EffectComposer(renderer, rt);
@@ -35,8 +38,7 @@ composer.addPass(new RenderPass(scene, camera));
 const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.6, 0.5, 0.88);
 const finalPass = new ShaderPass(FinalShader);
 composer.addPass(bloom); composer.addPass(finalPass); composer.addPass(new OutputPass());
-scene.environment = makeSpaceEnv(renderer);
-scene.environmentIntensity = 0.55;
+scene.environment = makeSpaceEnvFrom(renderer, sky);
 function applySettings() {
   renderer.setPixelRatio(Math.min(devicePixelRatio, [0.7, 1, 2][SET.q]));
   bloom.enabled = SET.q > 0; finalPass.enabled = SET.q > 0;
@@ -52,7 +54,7 @@ function resize() {
 addEventListener('resize', resize);
 
 // ---------- мир ----------
-const space = buildSpace(scene);
+const space = buildSpace(scene, renderer);
 const station = buildStation(); scene.add(station.group);
 const SH = buildShip(); scene.add(SH.group); SH.group.position.copy(DOCK_P);
 SH.group.add(camera);
@@ -60,7 +62,62 @@ const vm = makeViewModel(); camera.add(vm.group); vm.group.children.forEach(c =>
 const fx = new Particles(scene, 5000, true), fxN = new Particles(scene, 1500, false);
 const fxS = new Particles(SH.inner, 1500, true), fxSN = new Particles(SH.inner, 1200, false);
 const debris = new Debris(scene), flashes = new Flashes(scene), dmgNums = new DmgNumbers();
-const flare = sunFlare(V3(0.7, 0.45, 0.55).normalize().multiplyScalar(8000)); scene.add(flare);
+const flare = new SunFlare(scene, camera);
+// ---------- двигатели: факелы, свечение сопел, вентиляторы ----------
+const glowTex = (() => { const c = document.createElement('canvas'); c.width = c.height = 128; const x = c.getContext('2d'); const g = x.createRadialGradient(64, 64, 0, 64, 64, 64); g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.2, 'rgba(200,240,255,.6)'); g.addColorStop(1, 'rgba(120,180,255,0)'); x.fillStyle = g; x.fillRect(0, 0, 128, 128); return new THREE.CanvasTexture(c); })();
+SH.strobes.forEach(s => { s.material.map = glowTex; s.material.needsUpdate = true; }); // без текстуры спрайт — квадрат
+const engines = SH.nozzles.map((n, i) => {
+  const g = new THREE.Group(); g.position.copy(n.p); SH.group.add(g);
+  const outer = makePlume(n.r * 1.02, n.main ? 15 : 11, 0x1f4dff, 0x6fd8ff, i * 3.1); g.add(outer);
+  const core = makePlume(n.r * 0.45, n.main ? 6 : 4.5, 0x6fe0ff, 0xeafcff, i * 7.7); g.add(core);
+  const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0x9fdcff, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, toneMapped: false }));
+  glow.position.z = 0.2; g.add(glow);
+  return { g, outer, core, glow, n };
+});
+const _cw = V3(), _ed = V3(), _ep = V3();
+function updateEngines(power, boost, t, dt) {
+  camera.getWorldPosition(_cw);
+  for (const e of engines) {
+    // свечение сопла видно, только когда смотришь в само сопло (сбоку — это факел, а не шар)
+    e.g.getWorldPosition(_ep); _ed.set(0, 0, 1).applyQuaternion(SH.group.quaternion);
+    const look = Math.max(0, _cw.clone().sub(_ep).normalize().dot(_ed)); e.lookK = look * look;
+    for (const p of [e.outer, e.core]) {
+      const u = p.material.uniforms; u.uTime.value = t; u.uPower.value = power * (p === e.core ? 0.6 : 1); u.uBoost.value = boost;
+      p.scale.z = p.userData.baseLen * (0.2 + power * 0.85 + boost * 0.7); p.scale.x = p.scale.y = 1 + boost * 0.15 + Math.sin(t * 40 + p.id) * 0.02;
+    }
+    e.glow.material.opacity = Math.min(1, 0.12 + power * 0.5 + boost * 0.3) * (0.15 + 0.85 * e.lookK); e.glow.scale.setScalar(e.n.r * (1.2 + (power * 1.8 + boost * 2.2) * (0.3 + 0.7 * e.lookK)) * (0.95 + Math.random() * 0.1));
+    e.glow.material.color.setRGB(0.6 + boost * 0.4, 0.86 - boost * 0.1, 1);
+    e.n.mat.emissiveIntensity = 0.5 + power * 1.1 + boost * 0.9;
+    if (e.n.fan) e.n.fan.rotation.z += dt * (2 + power * 26 + boost * 20);
+  }
+}
+const _tmp = V3(), _tmp2 = V3();
+function emitExhaust(power, boost, dt) { // след раскалённого газа, остающийся в пространстве
+  if (power < 0.12) return;
+  for (const e of engines) {
+    const n = Math.random() < power * dt * 60 ? (boost ? 2 : 1) : 0;
+    for (let k = 0; k < n; k++) {
+      e.g.localToWorld(_tmp.set((Math.random() - 0.5) * e.n.r, (Math.random() - 0.5) * e.n.r, e.n.r * 0.6));
+      _tmp2.set(0, 0, 1).applyQuaternion(SH.group.quaternion).multiplyScalar(12 + power * 18);
+      fx.emit(_tmp.x, _tmp.y, _tmp.z, _tmp2.x, _tmp2.y, _tmp2.z, boost ? new THREE.Color(0.8, 0.6, 1) : new THREE.Color(0.35, 0.65, 1), 0.55 + power * 0.3, e.n.r * (1.1 + boost * 0.6), 2.2, 2.5);
+    }
+  }
+}
+const _wl = V3(), _rp = V3(), _rn = V3(), rcsT = [];
+function emitRCS(w, strafeU, dt) { // маневровые дюзы стреляют газом туда, куда нужно для поворота
+  SH.rcs.forEach((r, i) => {
+    const tq = _rp.copy(r.p).cross(_rn.copy(r.n).negate()); // момент от силы, противоположной струе
+    let fire = tq.lengthSq() > 0.01 && w.lengthSq() > 0.02 && tq.normalize().dot(_wl.copy(w).normalize()) > 0.45 && w.length() > 0.12;
+    if (strafeU && r.n.y * -strafeU > 0.5) fire = true;
+    rcsT[i] = (rcsT[i] || 0) - dt;
+    if (fire && rcsT[i] <= 0) {
+      rcsT[i] = 0.03;
+      const p = SH.group.localToWorld(_tmp.copy(r.p)), d = _tmp2.copy(r.n).applyQuaternion(SH.group.quaternion);
+      for (let k = 0; k < 3; k++) fxN.emit(p.x, p.y, p.z, d.x * 26 + (Math.random() - 0.5) * 5, d.y * 26 + (Math.random() - 0.5) * 5, d.z * 26 + (Math.random() - 0.5) * 5, new THREE.Color(0.92, 0.95, 1), 0.35, 0.5, 4, 5);
+      fx.emit(p.x, p.y, p.z, d.x * 10, d.y * 10, d.z * 10, new THREE.Color(0.7, 0.85, 1), 0.08, 0.7, 0, 0);
+    }
+  });
+}
 applySettings();
 
 // ---------- сеть ----------
@@ -539,7 +596,7 @@ function makeFire(slot, kind) {
   const parts = [];
   if (kind === 'fire') {
     for (let i = 0; i < 4; i++) { const c = new THREE.Mesh(new THREE.ConeGeometry(0.35 + i * 0.05, 1.2, 10, 1, true), i % 2 ? fireMat2 : fireMat); c.position.set((Math.random() - 0.5) * 0.6, 0.5, (Math.random() - 0.5) * 0.6); g.add(c); parts.push(c); }
-    const l = new THREE.PointLight(0xff7a2a, 4, 6, 1.5); l.position.y = 1; g.add(l); parts.light = l;
+    // свет пожара берётся из заранее созданного пула (новая лампа = перекомпиляция всех шейдеров = фриз)
   } else {
     const disc = new THREE.Mesh(new THREE.CircleGeometry(0.55, 24), new THREE.MeshBasicMaterial({ color: 0x000000 })); disc.rotation.x = -Math.PI / 2; disc.position.y = 0.02; g.add(disc);
     for (let i = 0; i < 2; i++) { const r = new THREE.Mesh(new THREE.TorusGeometry(0.6 + i * 0.18, 0.04, 6, 30), breachMat); r.rotation.x = -Math.PI / 2; r.position.y = 0.05 + i * 0.05; g.add(r); parts.push(r); }
@@ -547,12 +604,12 @@ function makeFire(slot, kind) {
   return { g, kind, slot, parts, hp: 100 };
 }
 function updateFires(dt, t) {
-  let any = false;
+  let any = false, li = 0;
   for (const F of FIRES.values()) {
     any = true; const s = FIRE_SLOTS[F.slot], k = 0.4 + F.hp / 100 * 0.6;
     if (F.kind === 'fire') {
       F.parts.forEach((c, i) => { const f = 0.8 + Math.sin(t * 17 + i * 2) * 0.2 + Math.random() * 0.1; c.scale.set(k, f * k * (1.2 + i * 0.2), k); c.position.y = 0.5 * f * k; });
-      F.parts.light.intensity = (3 + Math.random() * 2) * k;
+      const L = SH.fireLights[li++]; if (L) { L.position.set(s[0], 1, s[2]); L.intensity = (3 + Math.random() * 2) * k; }
       if (Math.random() < dt * 30) fxS.emit(s[0] + (Math.random() - 0.5) * 0.8, 0.3, s[2] + (Math.random() - 0.5) * 0.8, (Math.random() - 0.5) * 0.3, 1.5 + Math.random(), (Math.random() - 0.5) * 0.3, new THREE.Color(0xff9a3a), 0.7, 0.35, 0.5, 0.5);
       if (Math.random() < dt * 8) fxSN.emit(s[0], 1.4, s[2], (Math.random() - 0.5) * 0.4, 0.8, (Math.random() - 0.5) * 0.4, new THREE.Color(0x2a2630), 2, 0.6, 3, 0.4);
     } else {
@@ -561,6 +618,7 @@ function updateFires(dt, t) {
       if (Math.random() < dt * 12) fxS.emit(s[0], 0.1, s[2], (Math.random() - 0.5) * 3, 2, (Math.random() - 0.5) * 3, new THREE.Color(0x8ffcff), 0.3, 0.12, 0, 1);
     }
   }
+  for (; li < SH.fireLights.length; li++) SH.fireLights[li].intensity = 0;
   SH.alarm.intensity = any ? (Math.sin(t * 6) > 0 ? 6 : 0.5) : 0;
   const breaches = [...FIRES.values()].filter(f => f.kind === 'breach').length, fires = FIRES.size - breaches;
   $('alarm').style.display = any && !docked ? 'block' : 'none';
@@ -785,7 +843,9 @@ function updateHUD(dt) {
 let last = now(), menuT = 0, frame = 0;
 const CI = { init: false, q: new THREE.Quaternion(), p: new THREE.Vector3(), v: new THREE.Vector3(), ox: 0, oy: 0, oz: 0, roll: 0, pit: 0, fovK: 0 };
 // отражения окружения: металл блестит сильнее, интерьер — мягко
-scene.traverse(o => { if (o.material && o.material.isMeshStandardMaterial) o.material.envMapIntensity = o.material.metalness > 0.3 ? 1.2 : 0.45; });
+scene.traverse(o => { if (o.material && o.material.isMeshStandardMaterial && !SH.hull.getObjectById(o.id)) o.material.envMapIntensity = o.material.metalness > 0.3 ? 0.9 : 0.35; });
+SH.inner.traverse(o => { if (o.material && o.material.isMeshStandardMaterial && o.material !== MAT_GLASS()) o.material.envMapIntensity = o.material.metalness > 0.5 ? 0.45 : 0.15; });
+function MAT_GLASS() { return SH.inner.children.find(c => c.material && c.material.iridescence > 0)?.material; }
 const camWorld = V3();
 function loop() {
   requestAnimationFrame(loop);
@@ -803,6 +863,7 @@ function loop() {
   space.stars.position.copy(camWorld); space.nebula.position.copy(camWorld);
   fx.update(dt); fxN.update(dt); fxS.update(dt); fxSN.update(dt);
   debris.update(dt, fxN); flashes.update(dt); dmgNums.update(dt, camera);
+  flare.update(camera, phase === 'game' ? (me.seat ? 1 : 0.12) : 1);
   composer.render(dt);
 }
 function menuFrame(dt, t) {
@@ -812,7 +873,8 @@ function menuFrame(dt, t) {
   const a = menuT * 0.08;
   camera.position.set(Math.sin(a) * 30 - 6, 7 + Math.sin(menuT * 0.13) * 3, Math.cos(a) * 30 + 2);
   camera.lookAt(SH.group.localToWorld(V3(-4, 1, -2)));
-  for (const f of SH.flames) f.scale.set(1, 1, 0.3 + Math.sin(t * 30) * 0.05);
+  const co = window.__camOverride; if (co) { camera.position.set(...co.p); camera.lookAt(SH.group.localToWorld(V3(...co.l))); }
+  updateEngines(window.__engPow ?? 0.32, window.__engBoost ?? 0, t, dt);
   SH.outerDoors.forEach(d => d.position.z = 8);
   setEngine(0, false, false);
 }
@@ -835,7 +897,12 @@ function gameFrame(dt, t) {
   }
   const shipSpeed = PS.active ? PS.v.length() : Math.hypot(...snap.ship.v);
   const thr = PS.active ? Math.max(0, PS.thr) * (PS.boosting ? 1.8 : 1) : clamp(shipSpeed / 110, 0, 1.8);
-  for (const f of SH.flames) f.scale.set(1 + thr * 0.15, 1 + thr * 0.15, 0.2 + thr * 1.4 + Math.sin(t * 40) * 0.08);
+  const engPow = docked ? 0.06 : PS.active ? Math.max(0.1, PS.thr) : clamp(shipSpeed / 110, 0.1, 1);
+  const engBoost = PS.active ? (PS.boosting ? 1 : 0) : (shipSpeed > 140 ? 1 : 0);
+  CI.eb = (CI.eb || 0) + (engBoost - (CI.eb || 0)) * Math.min(1, dt * 5);
+  updateEngines(engPow, CI.eb, t, dt);
+  if (!docked) emitExhaust(engPow, CI.eb > 0.5, dt);
+  SH.hallLights.forEach(l => l.intensity = docked ? 6 : 0);
   setEngine(Math.min(1, thr), PS.boosting, !docked);
   // локальный игрок
   if (!me.seat && !me.down && !me.dead && !panelOpen) updateWalk(dt); else me.moving = false;
@@ -844,6 +911,7 @@ function gameFrame(dt, t) {
   // камера
   const inTurret = me.seat === 'tl' || me.seat === 'tr';
   SH.hull.visible = inTurret; station.cradles.visible = inTurret; SH.halls.visible = docked;
+  for (const id in SH.turretSeats) SH.turretSeats[id].visible = me.seat !== id; // своё кресло не лезет в кадр
   vm.group.visible = !me.seat && !me.down && !me.dead;
   camera.rotation.order = 'YXZ';
   // инерция экипажа: корабль крутится и ускоряется — тело и голову ведёт следом
@@ -857,6 +925,7 @@ function gameFrame(dt, t) {
   const kS = 1 - Math.exp(-dt * 5);
   CI.ox += (clamp(-accL.x * 0.0016, -0.16, 0.16) - CI.ox) * kS; CI.oy += (clamp(-accL.y * 0.0016, -0.12, 0.12) - CI.oy) * kS; CI.oz += (clamp(-accL.z * 0.0018, -0.2, 0.2) - CI.oz) * kS;
   CI.roll += (clamp(w.z * 0.06 + w.y * 0.05, -0.12, 0.12) - CI.roll) * kS; CI.pit += (clamp(w.x * 0.04, -0.08, 0.08) - CI.pit) * kS;
+  if (!docked) emitRCS(w, PS.active ? ((keys.Space ? 1 : 0) - (keys.KeyC ? 1 : 0)) : 0, dt);
   camKick *= Math.exp(-dt * 14); me.land = Math.max(0, (me.land || 0) - dt * 4);
   let shx = 0, shy = 0;
   shake = Math.max(0, shake - dt * 2.2); if (SET.shake && shake > 0) { shx = (Math.random() - 0.5) * shake * 0.12; shy = (Math.random() - 0.5) * shake * 0.12; }
@@ -939,6 +1008,23 @@ function gameFrame(dt, t) {
 
 // ---------- старт ----------
 window.__g = { me, PS, send, SH, keys, stick, mouse, ENT };
+// прогрев: всё, что может появиться в бою, компилируется сейчас, а не посреди перестрелки (иначе фризы)
+function prewarm() {
+  const tmp = [], base = camera.getWorldPosition(V3()).add(V3(0, 0, -60));
+  for (const ty of ['sw', 'je', 'wo', 'ne', 'bo']) { const o = makeCreature(ty); o.group.position.copy(base); scene.add(o.group); tmp.push(o.group); }
+  for (const c of Object.values(CREATURE_COLORS)) { const m = new THREE.Mesh(new THREE.SphereGeometry(1, 6, 4), debris.mat(c)); m.position.copy(base); scene.add(m); tmp.push(m); }
+  const fl = new THREE.Mesh(new THREE.SphereGeometry(1, 6, 4), new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false })); fl.position.copy(base); scene.add(fl); tmp.push(fl);
+  for (const k of ['nose', 'tur', 'rk']) spawnBolt(base.clone(), V3(0, 0, -1), k, false);
+  const f1 = makeFire(0, 'fire'), f2 = makeFire(1, 'breach');
+  const hv = SH.halls.visible, hh = SH.hull.visible, cv = station.cradles.visible;
+  SH.halls.visible = true; SH.hull.visible = true; station.cradles.visible = true;
+  try { renderer.compile(scene, camera); } catch (e) { console.warn(e); }
+  SH.halls.visible = hv; SH.hull.visible = hh; station.cradles.visible = cv;
+  for (const o of tmp) scene.remove(o);
+  for (const b of bolts) scene.remove(b.mesh); bolts.length = 0;
+  SH.inner.remove(f1.g); SH.inner.remove(f2.g);
+}
+prewarm();
 connect();
 $('whoName').textContent = myName;
 setTimeout(() => { $('loading').style.display = 'none'; show(myName ? 'sMenu' : 'sName'); if (!myName) $('nameIn').focus(); }, 300);

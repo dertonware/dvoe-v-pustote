@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { hullTextures, panelTextures, floorTextures } from './fx.js';
+import { hullTextures, panelTextures, floorTextures, makePlanetTex, makeMoonTex, makeRings } from './fx.js';
+import { buildHullModel } from './shipmodel.js';
 
 // ---------- общие материалы ----------
 const std = (color, o = {}) => new THREE.MeshStandardMaterial(Object.assign({ color, roughness: 0.72, metalness: 0.04 }, o));
@@ -39,10 +40,28 @@ function segs(a, b, doors) { // [a,b] minus door intervals
   for (const [d0, d1] of (doors || []).slice().sort((p, q) => p[0] - q[0])) { if (d0 > cur) out.push([cur, d0]); cur = Math.max(cur, d1); }
   if (cur < b) out.push([cur, b]); return out;
 }
+// плитка текстуры по реальным размерам (а не растянутая на всю панель)
+const tcache = {};
+function tileBox(w, h, d, r, mat, parent, x, y, z, tile = 1.6) {
+  const k = [w, h, d, r, tile].map(v => v.toFixed(2)).join('_');
+  let g = tcache[k];
+  if (!g) {
+    g = new RoundedBoxGeometry(w, h, d, 2, Math.max(0.005, Math.min(r, w / 2 - 0.001, h / 2 - 0.001, d / 2 - 0.001)));
+    const n = g.attributes.normal, uv = g.attributes.uv;
+    for (let i = 0; i < uv.count; i++) {
+      const ax = Math.abs(n.getX(i)), ay = Math.abs(n.getY(i)), az = Math.abs(n.getZ(i));
+      const [su, sv] = ay >= ax && ay >= az ? [w, d] : ax >= az ? [d, h] : [w, h];
+      uv.setXY(i, uv.getX(i) * su / tile, uv.getY(i) * sv / tile);
+    }
+    tcache[k] = g;
+  }
+  const m = new THREE.Mesh(g, mat); m.position.set(x, y, z); parent.add(m); return m;
+}
 function room(g, x0, x1, z0, z1, doors = {}, o = {}) {
   const wm = o.wall || MAT.wall;
-  rbox(g, x1 - x0 + T, 0.2, z1 - z0 + T, 0.06, o.floor || MAT.floor, (x0 + x1) / 2, -0.1, (z0 + z1) / 2);
-  if (!o.noCeil) rbox(g, x1 - x0 + T, 0.2, z1 - z0 + T, 0.06, MAT.ceil, (x0 + x1) / 2, H + 0.1, (z0 + z1) / 2);
+  // пол и потолок ровно по размеру комнаты — соседние комнаты стыкуются, а не перекрываются (иначе мерцание)
+  tileBox(x1 - x0, 0.2, z1 - z0, 0.02, o.floor || MAT.floor, g, (x0 + x1) / 2, -0.1, (z0 + z1) / 2, 1.2);
+  if (!o.noCeil) tileBox(x1 - x0, 0.2, z1 - z0, 0.02, MAT.ceil, g, (x0 + x1) / 2, H + 0.1, (z0 + z1) / 2, 1.6);
   const wallH = s => (o.h && o.h[s]) || H;
   const sides = { n: [x0, x1, z0, 'x'], s: [x0, x1, z1, 'x'], w: [z0, z1, x0, 'z'], e: [z0, z1, x1, 'z'] };
   for (const s in sides) {
@@ -50,7 +69,7 @@ function room(g, x0, x1, z0, z1, doors = {}, o = {}) {
     const [a, b, c, ax] = sides[s], hh = wallH(s);
     for (const [p, q] of segs(a, b, doors[s])) {
       const L = q - p + (ax === 'x' ? T : 0); if (L < 0.05) continue;
-      if (ax === 'x') rbox(g, L, hh, T, 0.08, wm, (p + q) / 2, hh / 2, c); else rbox(g, T, hh, L, 0.08, wm, c, hh / 2, (p + q) / 2);
+      if (ax === 'x') tileBox(L, hh, T, 0.05, wm, g, (p + q) / 2, hh / 2, c); else tileBox(T, hh, L, 0.05, wm, g, c, hh / 2, (p + q) / 2);
     }
     for (const [p, q] of doors[s] || []) {
       if (ax === 'x') { rbox(g, q - p, 0.5, T, 0.06, wm, (p + q) / 2, H - 0.25, c); rbox(g, q - p, 0.06, T + 0.04, 0.02, MAT.teal, (p + q) / 2, H - 0.52, c); }
@@ -118,7 +137,7 @@ export function buildShip() {
   rbox(I, 4.4, 0.25, 0.5, 0.1, MAT.hullD, 0, 2.95, -5.1); // дуга
   // приборная панель
   const dash = rbox(I, 3.6, 0.45, 0.8, 0.18, MAT.hullD, 0, 0.62, -9.05); dash.rotation.x = -0.35;
-  [[-1.1, 0], [0, 1], [1.1, 2]].forEach(([x, k]) => { const s = new THREE.Mesh(new THREE.PlaneGeometry(0.85, 0.52), new THREE.MeshBasicMaterial({ map: screenTex(k === 1 ? '#ff8a3d' : '#5ff6ff', k), toneMapped: false })); s.position.set(x, 0.9, -8.8); s.rotation.x = -0.75; I.add(s); });
+  [[-1.1, 0], [0, 1], [1.1, 2]].forEach(([x, k]) => { const s = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.31), new THREE.MeshBasicMaterial({ map: screenTex(k === 1 ? '#ff8a3d' : '#5ff6ff', k), color: 0x9a9a9a })); s.position.set(x * 0.85, 0.9, -8.78); s.rotation.x = -0.75; I.add(s); });
   const btnM = [0xff8a3d, 0x5ff6ff, 0x7dffb0, 0xff3b4f].map(c => new THREE.MeshStandardMaterial({ color: c, emissive: c, emissiveIntensity: 0.6 }));
   for (let i = 0; i < 10; i++) sph(I, 0.022, btnM[i % 4], -1.45 + i * 0.32, 0.78, -8.55, 8);
   // кресло пилота
@@ -137,7 +156,7 @@ export function buildShip() {
   }
 
   // Коридор A
-  room(I, -1.1, 1.1, -5, -1.5, { n: [[-1.1, 1.1]], s: [[-1.1, 1.1]] }, { strip, skip: [] });
+  room(I, -1.1, 1.1, -5, -1.5, {}, { strip, skip: ['n', 's'] }); // торцы коридора дают соседние комнаты
   for (let z = -4.5; z < -1.8; z += 0.9) { rbox(I, 0.12, 0.6, 0.12, 0.05, MAT.metal, -1.0, 1.4, z); rbox(I, 0.12, 0.6, 0.12, 0.05, MAT.metal, 1.0, 1.4, z); }
   cyl(I, 0.07, 0.07, 3.4, MAT.hullO, 0.7, 2.55, -3.25).rotation.x = Math.PI / 2;
   cyl(I, 0.05, 0.05, 3.4, MAT.metal, -0.7, 2.6, -3.25).rotation.x = Math.PI / 2;
@@ -155,14 +174,15 @@ export function buildShip() {
     rbox(I, 0.06, 0.06, 0.6, 0.02, MAT.orange, sx * 2.38, 1.6, 2.7);
   }
   // турельные пузыри
-  const turretGuns = {};
+  const turretGuns = {}, turretSeats = {};
   for (const [id, sx] of [['tl', -1], ['tr', 1]]) {
     const cx = sx * 4.7;
-    cyl(I, 1.5, 1.5, 0.2, MAT.floor, cx, -0.1, 1, 28);
-    rbox(I, 1.6, 0.2, 1.8, 0.06, MAT.floor, sx * 3.6, -0.1, 1);
+    cyl(I, 1.5, 1.5, 0.2, MAT.floor, cx, -0.12, 1, 28);
+    rbox(I, 1.6, 0.19, 1.6, 0.02, MAT.floor, sx * 3.85, -0.105, 1);
     sph(I, 1.75, MAT.glass, cx, 1.3, 1, 32);
     const ring = new THREE.Mesh(new THREE.TorusGeometry(1.72, 0.14, 10, 40), MAT.hullD); ring.position.set(cx, 0.15, 1); ring.rotation.x = Math.PI / 2; I.add(ring);
-    rbox(I, 0.7, 0.22, 0.75, 0.1, MAT.seat, sx * 5.2, 0.45, 1); rbox(I, 0.2, 0.8, 0.75, 0.1, MAT.seat, sx * 4.82, 0.85, 1);
+    const seatG = new THREE.Group(); I.add(seatG); turretSeats[id] = seatG;
+    rbox(seatG, 0.7, 0.22, 0.75, 0.1, MAT.seat, sx * 5.2, 0.45, 1); rbox(seatG, 0.2, 0.8, 0.75, 0.1, MAT.seat, sx * 4.82, 0.85, 1);
     const piv = new THREE.Group(); piv.position.set(sx * 5.9, -0.15, 1); I.add(piv);
     sph(piv, 0.5, MAT.hullD, 0, 0, 0, 14);
     for (const o of [-0.22, 0.22]) { const b = cyl(piv, 0.09, 0.11, 2.2, MAT.metal, o, 0, 1.1); b.rotation.x = Math.PI / 2; sph(piv, 0.1, MAT.orange, o, 0, 2.2, 8); }
@@ -170,7 +190,7 @@ export function buildShip() {
   }
 
   // Коридор B
-  room(I, -1.1, 1.1, 3.5, 6, { n: [[-1.1, 1.1]], s: [[-1.1, 1.1]] }, { strip });
+  room(I, -1.1, 1.1, 3.5, 6, {}, { strip, skip: ['n', 's'] });
   // Машинное отделение
   room(I, -3, 3, 6, 10.5, { n: [[-1.1, 1.1]], w: [[7.2, 8.8]], e: [[7.2, 8.8]] }, { strip: MAT.orange });
   cyl(I, 0.95, 0.95, 0.25, MAT.hullD, 0, 0.12, 10.1, 24); cyl(I, 0.95, 0.95, 0.25, MAT.hullD, 0, 2.65, 10.1, 24);
@@ -199,37 +219,14 @@ export function buildShip() {
     const l = new THREE.PointLight(c, i, 9, 1.6); l.position.set(...p); I.add(l); lights.push(l);
   }
   const alarm = new THREE.PointLight(0xff2a3a, 0, 14, 1.4); alarm.position.set(0, 2.4, 2); I.add(alarm);
+  const fireLights = [0, 1, 2].map(() => { const l = new THREE.PointLight(0xff7a2a, 0, 6, 1.5); I.add(l); return l; });
 
-  // ---------- Корпус снаружи ----------
-  rbox(hull, 6.6, 3.6, 17, 1.5, MAT.hull, 0, 1.3, 2.1);
-  rbox(hull, 5, 1.7, 5.2, 0.75, MAT.hull, 0, 0.05, -7.3);
-  rbox(hull, 6.7, 0.35, 14, 0.15, MAT.hullO, 0, 1.0, 3.2);
-  rbox(hull, 3.4, 0.5, 12, 0.24, MAT.hullD, 0, 3.15, 3.5);
-  for (const sx of [-1, 1]) {
-    const eng = capsule(hull, 1.15, 4, MAT.hull, sx * 2.4, 0.35, 11.8); eng.rotation.x = Math.PI / 2;
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.95, 0.22, 10, 26), MAT.hullD); ring.position.set(sx * 2.4, 0.35, 14.3); hull.add(ring);
-    const noz = new THREE.Mesh(new THREE.CircleGeometry(0.85, 24), MAT.teal); noz.position.set(sx * 2.4, 0.35, 14.35); hull.add(noz);
-    const w = rbox(hull, 6.2, 0.45, 4.4, 0.2, MAT.hull, sx * 5.6, -0.8, 7.2); w.rotation.z = sx * -0.13;
-    rbox(hull, 2.4, 0.47, 1.2, 0.2, MAT.hullO, sx * 7.4, -1.0, 6.2).rotation.z = sx * -0.13;
-    sph(hull, 0.22, sx < 0 ? MAT.red : MAT.green, sx * 8.6, -1.15, 7.2, 10);
-    rbox(hull, 1.9, 2.9, 2.5, 0.5, MAT.hull, sx * 3.9, 1.3, 8);
-    const tb = new THREE.Mesh(new THREE.TorusGeometry(1.7, 0.2, 10, 36), MAT.hullD); tb.position.set(sx * 4.7, 1.3, 1); tb.rotation.y = Math.PI / 2; hull.add(tb);
-  }
-  const fin = rbox(hull, 0.45, 2.4, 3.6, 0.2, MAT.hullO, 0, 3.9, 8.6); fin.rotation.x = 0.3;
-  sph(hull, 0.18, MAT.red, 0, 5.05, 9.4, 10);
-  // пламя двигателей
-  const flames = [];
-  const flameMat = new THREE.MeshBasicMaterial({ color: 0x7fe8ff, transparent: true, opacity: 0.75, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
-  const flameMat2 = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
-  for (const sx of [-1, 1]) {
-    const f = new THREE.Group(); f.position.set(sx * 2.4, 0.35, 14.4); ship.add(f);
-    const c1 = new THREE.Mesh(new THREE.ConeGeometry(0.8, 4, 18, 1, true), flameMat); c1.rotation.x = -Math.PI / 2; c1.position.z = 2; f.add(c1);
-    const c2 = new THREE.Mesh(new THREE.ConeGeometry(0.4, 2.4, 14, 1, true), flameMat2); c2.rotation.x = -Math.PI / 2; c2.position.z = 1.2; f.add(c2);
-    flames.push(f);
-  }
+  // ---------- Корпус снаружи (отдельная модель) ----------
+  const model = buildHullModel(hull, MAT, HT);
 
   // ---------- Залы станции (видны только при стыковке) ----------
   const halls = new THREE.Group(); I.add(halls);
+  const hallLights = [];
   const hallMat = std(0x7d7195), hallFloor = std(0x3a3346, { roughness: 0.9 });
   room(halls, -15, -4.5, 3, 13, { e: [[7.2, 8.8]] }, { wall: hallMat, floor: hallFloor, strip: MAT.orange });
   room(halls, 4.5, 15, 3, 13, { w: [[7.2, 8.8]] }, { wall: hallMat, floor: hallFloor, strip: MAT.teal });
@@ -248,23 +245,18 @@ export function buildShip() {
     rbox(halls, 0.9, 0.9, 0.9, 0.15, MAT.hullO, sx * 6.5, 1.35, 12.2);
     for (const z of [4.2, 11.8]) { cyl(halls, 0.35, 0.28, 0.6, MAT.hullD, sx * 12.5, 0.3, z); sph(halls, 0.55, std(0x6fd38f), sx * 12.5, 0.95, z, 14); sph(halls, 0.35, std(0x8fe8a8), sx * 12.3, 1.35, z - 0.2, 12); }
     const sign = textSprite(sx < 0 ? '◆ ТОРГОВОЕ КРЫЛО' : 'ЦЕНТР МИССИЙ ◆', sx < 0 ? '#ffb067' : '#5ff6ff', 2.2); sign.position.set(sx * 9.7, 2.4, 3.3); halls.add(sign);
-    const hl = new THREE.PointLight(sx < 0 ? 0xffc890 : 0xa0e8ff, 6, 16, 1.5); hl.position.set(sx * 9.7, 2.5, 8); halls.add(hl);
+    const hl = new THREE.PointLight(sx < 0 ? 0xffc890 : 0xa0e8ff, 0, 16, 1.5); hl.position.set(sx * 9.7, 2.5, 8); I.add(hl); hallLights.push(hl);
   }
   halls.visible = false;
 
-  // проблесковые огни на корпусе
-  const strobes = [];
-  for (const [x, y, z, c] of [[-8.6, -1.15, 7.2, 0xff3b4f], [8.6, -1.15, 7.2, 0x7dffb0], [0, 5.05, 9.4, 0xffffff], [0, -0.9, -9.8, 0xffffff]]) {
-    const s = new THREE.Sprite(new THREE.SpriteMaterial({ color: c, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, transparent: true }));
-    s.position.set(x, y, z); s.scale.setScalar(2.2); hull.add(s); strobes.push(s);
-  }
-  return { group: ship, inner, hull, holo, holoCone, reactor, lights, alarm, flames, turretGuns, outerDoors, halls, stickTop, throttle, strobes };
+  return { group: ship, inner, hull, holo, holoCone, reactor, lights, alarm, turretGuns, turretSeats, outerDoors, halls, stickTop, throttle, strobes: model.strobes, nozzles: model.nozzles, rcs: model.rcs, hallLights, fireLights };
 }
 
 // ---------- СТАНЦИЯ ----------
 export function buildStation() {
   const g = new THREE.Group();
   const m1 = std(0xe6dccb, { roughness: 0.6 }), m2 = std(0x5b5470), mo = MAT.hullO;
+  const dockLamp = new THREE.MeshStandardMaterial({ color: 0xffd05f, emissive: 0xffb030, emissiveIntensity: 1.1 });
   sph(g, 55, m1, 0, 0, 0, 48);
   for (const y of [-20, 0, 20]) { const t = new THREE.Mesh(new THREE.TorusGeometry(Math.sqrt(55 * 55 - y * y) + 1, 3, 12, 64), y ? m2 : mo); t.position.y = y; t.rotation.x = Math.PI / 2; g.add(t); }
   for (let i = 0; i < 40; i++) { const a = i / 40 * Math.PI * 2; const w = rbox(g, 3, 1.4, 0.8, 0.3, i % 3 ? MAT.yellow : MAT.teal, Math.cos(a) * 55.5, 10, Math.sin(a) * 55.5); w.lookAt(0, 10, 0); }
@@ -275,7 +267,7 @@ export function buildStation() {
   for (let i = 0; i < 6; i++) { const a = i / 6 * Math.PI * 2; const s = cyl(ring, 3, 3, 90, m2, Math.cos(a) * 97, Math.sin(a) * 97, 0); s.rotation.z = a + Math.PI / 2; }
   for (let i = 0; i < 48; i++) { const a = i / 48 * Math.PI * 2; sph(ring, 1.6, i % 2 ? MAT.teal : MAT.yellow, Math.cos(a) * 140, Math.sin(a) * 140, 13, 8); }
   // док-рукав и захваты корабля
-  for (const sx of [-1, 1]) { rbox(g, 4, 4, 170, 1.5, m2, sx * 10, -5.5, 137); for (let z = 70; z < 215; z += 20) sph(g, 1, MAT.yellow, sx * 10, -3.1, z, 8); }
+  for (const sx of [-1, 1]) { rbox(g, 4, 4, 170, 1.5, m2, sx * 10, -5.5, 137); for (let z = 70; z < 215; z += 20) sph(g, 0.7, dockLamp, sx * 10, -3.1, z, 8); }
   const cradles = new THREE.Group(); g.add(cradles);
   for (const sx of [-1, 1]) { rbox(cradles, 11.2, 4.4, 11, 1.6, m1, sx * 10.05, 1.4, 222); rbox(cradles, 11.4, 0.6, 11.2, 0.25, mo, sx * 10.05, 3.2, 222); }
   const dockRing = new THREE.Mesh(new THREE.TorusGeometry(18, 0.7, 10, 48), new THREE.MeshStandardMaterial({ color: 0xffd05f, emissive: 0xffb030, emissiveIntensity: 0.9, roughness: 0.4 })); dockRing.position.copy(DOCK_APPROACH); g.add(dockRing);
@@ -284,10 +276,10 @@ export function buildStation() {
 }
 
 // ---------- КОСМОС ----------
-export function buildSpace(scene) {
+export function buildSpace(scene, renderer) {
   const out = {};
   // звёзды
-  const N = 7000, pos = new Float32Array(N * 3), col = new Float32Array(N * 3);
+  const N = 3500, pos = new Float32Array(N * 3), col = new Float32Array(N * 3);
   for (let i = 0; i < N; i++) {
     const v = new THREE.Vector3().randomDirection().multiplyScalar(9000); pos.set([v.x, v.y, v.z], i * 3);
     const c = new THREE.Color().setHSL(Math.random() < 0.5 ? 0.6 : 0.08, 0.5, 0.65 + Math.random() * 0.35); col.set([c.r, c.g, c.b], i * 3);
@@ -295,33 +287,32 @@ export function buildSpace(scene) {
   const sg = new THREE.BufferGeometry(); sg.setAttribute('position', new THREE.BufferAttribute(pos, 3)); sg.setAttribute('color', new THREE.BufferAttribute(col, 3));
   out.stars = new THREE.Points(sg, new THREE.PointsMaterial({ size: 2.2, sizeAttenuation: false, vertexColors: true, toneMapped: false, depthWrite: false }));
   scene.add(out.stars);
-  // туманности
-  const neb = canvasTex(256, 256, (x, w) => { const g = x.createRadialGradient(w / 2, w / 2, 0, w / 2, w / 2, w / 2); g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.35, 'rgba(255,255,255,.35)'); g.addColorStop(1, 'rgba(255,255,255,0)'); x.fillStyle = g; x.fillRect(0, 0, w, w); });
-  const nebCols = [0x7a3cff, 0xff4f9a, 0x2fd6ff, 0xff8a3d, 0x5b2cff, 0x30ffc0, 0xc040ff, 0x2f6bff];
-  out.nebula = new THREE.Group(); scene.add(out.nebula);
-  for (let i = 0; i < 14; i++) {
-    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: neb, color: nebCols[i % nebCols.length], transparent: true, opacity: 0.22 + Math.random() * 0.18, blending: THREE.AdditiveBlending, depthWrite: false }));
-    const d = new THREE.Vector3(Math.random() - 0.5, (Math.random() - 0.5) * 0.5, Math.random() - 0.5).normalize().multiplyScalar(7500);
-    s.position.copy(d); const sc = 3000 + Math.random() * 5000; s.scale.set(sc, sc, 1); out.nebula.add(s);
-  }
-  // планета
-  const ptex = canvasTex(1024, 512, (x, w, h) => {
-    const g = x.createLinearGradient(0, 0, 0, h); g.addColorStop(0, '#3b2a6b'); g.addColorStop(0.5, '#ff8a5c'); g.addColorStop(1, '#2a1f55'); x.fillStyle = g; x.fillRect(0, 0, w, h);
-    for (let i = 0; i < 70; i++) { x.fillStyle = `hsla(${(i * 37) % 60 + 250},60%,${30 + Math.random() * 40}%,.25)`; x.fillRect(0, Math.random() * h, w, 4 + Math.random() * 26); }
-    for (let i = 0; i < 40; i++) { x.fillStyle = 'rgba(255,220,200,.12)'; x.beginPath(); x.ellipse(Math.random() * w, Math.random() * h, 20 + Math.random() * 70, 8 + Math.random() * 20, 0, 0, 7); x.fill(); }
+  out.nebula = new THREE.Group(); scene.add(out.nebula); // небо теперь рисуется шейдером (makeSky)
+  // планета-гигант с кольцами и атмосферой
+  const planet = new THREE.Mesh(new THREE.SphereGeometry(1900, 96, 64), new THREE.MeshStandardMaterial({ map: makePlanetTex(renderer), roughness: 0.95, metalness: 0 }));
+  planet.position.set(-5200, -1400, -6200); planet.rotation.set(0.25, 0.6, 0.18); scene.add(planet); out.planet = planet;
+  const rings = makeRings(2400, 4100); rings.position.copy(planet.position); rings.rotation.set(-Math.PI / 2 + 0.42, 0.25, 0.1); scene.add(rings);
+  const atmMat = (back, k) => new THREE.ShaderMaterial({
+    side: back ? THREE.BackSide : THREE.FrontSide, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+    uniforms: { uSun: { value: new THREE.Vector3(0.7, 0.45, 0.55).normalize() } },
+    vertexShader: `#include <common>
+#include <logdepthbuf_pars_vertex>
+varying vec3 vN; varying vec3 vV; void main(){ vec4 wp = modelMatrix*vec4(position,1.); vN = normalize(mat3(modelMatrix)*normal); vV = normalize(cameraPosition - wp.xyz); gl_Position = projectionMatrix*viewMatrix*wp;
+#include <logdepthbuf_vertex>
+}`,
+    // clamp обязателен: pow от отрицательного числа = NaN, а bloom размазывал NaN в чёрные квадраты
+    fragmentShader: `#include <common>
+#include <logdepthbuf_pars_fragment>
+uniform vec3 uSun; varying vec3 vN; varying vec3 vV; void main(){
+#include <logdepthbuf_fragment>
+float ndv = clamp(abs(dot(normalize(vN), normalize(vV))), 0.0, 1.0); float f = pow(max(1.0 - ndv, 0.0), ${back ? '2.2' : '4.0'}); float lit = clamp(dot(normalize(vN), uSun) * 0.9 + 0.35, 0.0, 1.0); vec3 c = mix(vec3(0.45,0.25,0.9), vec3(1.0,0.6,0.7), lit); gl_FragColor = vec4(c * f * lit * ${k}, 1.0); }`,
   });
-  const planet = new THREE.Mesh(new THREE.SphereGeometry(1900, 64, 40), new THREE.MeshStandardMaterial({ map: ptex, roughness: 1 }));
-  planet.position.set(-5200, -1400, -6200); scene.add(planet); out.planet = planet;
-  const atm = new THREE.Mesh(new THREE.SphereGeometry(2050, 64, 40), new THREE.ShaderMaterial({
-    side: THREE.BackSide, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
-    vertexShader: 'varying vec3 vN; varying vec3 vV; void main(){ vec4 mv = modelViewMatrix*vec4(position,1.); vN = normalize(normalMatrix*normal); vV = normalize(-mv.xyz); gl_Position = projectionMatrix*mv; }',
-    fragmentShader: 'varying vec3 vN; varying vec3 vV; void main(){ float f = pow(1.0-abs(dot(vN,vV)), 2.5); gl_FragColor = vec4(vec3(1.0,0.55,0.75)*f*1.6, f); }',
-  }));
-  atm.position.copy(planet.position); scene.add(atm);
-  // солнце
+  const atm = new THREE.Mesh(new THREE.SphereGeometry(2080, 96, 64), atmMat(true, "1.8")); atm.position.copy(planet.position); scene.add(atm);
+  const atm2 = new THREE.Mesh(new THREE.SphereGeometry(1905, 96, 64), atmMat(false, "1.4")); atm2.position.copy(planet.position); scene.add(atm2);
+  // луна
+  const moon = new THREE.Mesh(new THREE.SphereGeometry(380, 64, 40), new THREE.MeshStandardMaterial({ map: makeMoonTex(renderer), roughness: 1 }));
+  moon.position.set(-1900, 1300, -5600); scene.add(moon); out.moon = moon;
   const sunDir = new THREE.Vector3(0.7, 0.45, 0.55).normalize();
-  const sun = new THREE.Sprite(new THREE.SpriteMaterial({ map: neb, color: 0xfff0d0, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }));
-  sun.position.copy(sunDir.clone().multiplyScalar(8500)); sun.scale.set(1600, 1600, 1); scene.add(sun);
   const dl = new THREE.DirectionalLight(0xfff1dc, 2.4); dl.position.copy(sunDir.clone().multiplyScalar(100)); scene.add(dl);
   scene.add(new THREE.HemisphereLight(0x8a7cff, 0x2a1a30, 0.75));
   scene.add(new THREE.AmbientLight(0x404060, 0.35));
@@ -357,8 +348,16 @@ export class Particles {
     g.setAttribute('position', new THREE.BufferAttribute(this.pos, 3)); g.setAttribute('col', new THREE.BufferAttribute(this.col, 4)); g.setAttribute('size', new THREE.BufferAttribute(this.size, 1));
     this.mat = new THREE.ShaderMaterial({
       uniforms: { uScale: { value: innerHeight * 0.5 } }, transparent: true, depthWrite: false, blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
-      vertexShader: 'attribute float size; attribute vec4 col; uniform float uScale; varying vec4 vC; void main(){ vC = col; vec4 mv = modelViewMatrix*vec4(position,1.); gl_PointSize = size*uScale/max(0.1,-mv.z); gl_Position = projectionMatrix*mv; }',
-      fragmentShader: 'varying vec4 vC; void main(){ float d = length(gl_PointCoord-0.5); float a = smoothstep(0.5,0.05,d)*vC.a; if(a<0.01) discard; gl_FragColor = vec4(vC.rgb, a); }',
+      vertexShader: `#include <common>
+#include <logdepthbuf_pars_vertex>
+attribute float size; attribute vec4 col; uniform float uScale; varying vec4 vC; void main(){ vC = col; vec4 mv = modelViewMatrix*vec4(position,1.); gl_PointSize = min(size*uScale/max(0.1,-mv.z), 512.0); gl_Position = projectionMatrix*mv;
+#include <logdepthbuf_vertex>
+}`,
+      fragmentShader: `#include <common>
+#include <logdepthbuf_pars_fragment>
+varying vec4 vC; void main(){
+#include <logdepthbuf_fragment>
+float d = length(gl_PointCoord-0.5); float a = smoothstep(0.5,0.05,d)*vC.a; if(a<0.01) discard; gl_FragColor = vec4(vC.rgb, a); }`,
     });
     this.points = new THREE.Points(g, this.mat); this.points.frustumCulled = false; parent.add(this.points); this.g = g;
   }
