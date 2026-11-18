@@ -55,13 +55,96 @@ applySettings();
 
 // ---------- сеть ----------
 let ws = null, myId = null, lobby = null, snap = null, snapT = 0, phase = 'menu';
-function connect() {
+// Два режима сети:
+//  ws  — игра открыта с нашего node-сервера (start.bat), всё как раньше;
+//  p2p — игра на GitHub Pages: браузер хоста сам держит мир, друг подключается напрямую (WebRTC через PeerJS).
+let NET = 'ws', sendRaw = () => { }, p2pRole = null, roomCode = null, peer = null, guestConn = null;
+const send = o => sendRaw(o);
+const onlineSt = t => { $('netSt').textContent = t; };
+function connectWS() {
   ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
-  ws.onopen = () => { $('netSt').textContent = 'онлайн'; if (myName) send({ t: 'hello', n: myName }); };
-  ws.onclose = () => { $('netSt').textContent = 'нет связи…'; if (phase === 'game') { toast('Связь с сервером потеряна', 'red'); leaveGame(); show('sMenu'); } setTimeout(connect, 1500); };
+  sendRaw = o => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); };
+  ws.onopen = () => { onlineSt('онлайн'); if (myName) send({ t: 'hello', n: myName }); };
+  ws.onclose = () => { onlineSt('нет связи…'); if (phase === 'game') { toast('Связь с сервером потеряна', 'red'); leaveGame(); show('sMenu'); } setTimeout(connectWS, 1500); };
   ws.onmessage = e => { try { onMsg(JSON.parse(e.data)); } catch (err) { console.error(err); } };
 }
-const send = o => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); };
+const PEER_PREFIX = 'dvp2-room-';
+const newCode = () => Array.from({ length: 6 }, () => 'abcdefghjkmnpqrstuvwxyz23456789'[Math.floor(Math.random() * 31)]).join('');
+const PEER_OPTS = { debug: 1, config: { iceServers: [
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+  { urls: 'stun:stun.cloudflare.com:3478' },
+  { urls: ['turn:eu-0.turn.peerjs.com:3478', 'turn:us-0.turn.peerjs.com:3478'], username: 'peerjs', credential: 'peerjsp' },
+] } };
+async function startHost() {
+  p2pRole = 'host';
+  const sim = await import('./sim.js');
+  // локальный игрок подключается к своему же миру напрямую
+  const local = sim.connect({ readyState: 1, send: s => queueMicrotask(() => { try { onMsg(JSON.parse(s)); } catch (e) { console.error(e); } }), close() { } }, true);
+  sendRaw = o => local.message(o);
+  if (myName) send({ t: 'hello', n: myName });
+  const open = () => {
+    roomCode = roomCode || newCode();
+    onlineSt('создаю комнату…');
+    peer = new window.Peer(PEER_PREFIX + roomCode, PEER_OPTS);
+    peer.on('open', () => {
+      const url = location.origin + location.pathname + '?room=' + roomCode;
+      sim.setInviteUrl(url); onlineSt('ты хост · комната ' + roomCode);
+    });
+    peer.on('connection', conn => {
+      let h = null;
+      conn.on('open', () => {
+        h = sim.connect({ get readyState() { return conn.open ? 1 : 3; }, send: s => { try { conn.send(s); } catch { } }, close: () => conn.close() }, false);
+        if (!h) setTimeout(() => conn.close(), 500);
+      });
+      conn.on('data', d => { if (h) h.message(d); });
+      conn.on('close', () => { if (h) h.close(); h = null; });
+      conn.on('error', () => { if (h) h.close(); h = null; });
+    });
+    peer.on('disconnected', () => { onlineSt('переподключаю комнату…'); setTimeout(() => { try { peer.reconnect(); } catch { } }, 1500); });
+    peer.on('error', e => {
+      console.warn('peer', e.type, e);
+      if (e.type === 'unavailable-id') { roomCode = null; peer.destroy(); setTimeout(open, 300); }
+      else if (['network', 'server-error', 'socket-error', 'socket-closed'].includes(e.type)) { onlineSt('нет связи с сервером комнат, пробую снова…'); peer.destroy(); setTimeout(open, 4000); }
+    });
+  };
+  open();
+}
+function startGuest(code) {
+  p2pRole = 'guest'; roomCode = code;
+  onlineSt('подключаюсь к комнате ' + code + '…');
+  let tries = 0;
+  const go = () => {
+    tries++;
+    if (peer) try { peer.destroy(); } catch { }
+    peer = new window.Peer(PEER_OPTS);
+    peer.on('open', () => {
+      const conn = peer.connect(PEER_PREFIX + code, { serialization: 'raw', reliable: true });
+      guestConn = conn;
+      const to = setTimeout(() => { if (!conn.open) { conn.close(); fail('Хост не отвечает'); } }, 15000);
+      conn.on('open', () => {
+        clearTimeout(to); tries = 0; onlineSt('в комнате ' + code);
+        sendRaw = o => { if (conn.open) conn.send(JSON.stringify(o)); };
+        if (myName) send({ t: 'hello', n: myName });
+      });
+      conn.on('data', d => { try { onMsg(JSON.parse(d)); } catch (e) { console.error(e); } });
+      conn.on('close', () => { sendRaw = () => { }; if (phase === 'game' || phase === 'over') { toast('Связь с хостом потеряна', 'red'); leaveGame(); show('sMenu'); } fail('Соединение закрыто'); });
+    });
+    peer.on('error', e => { console.warn('peer', e.type, e); fail(e.type === 'peer-unavailable' ? 'Комната не найдена — хост закрыл вкладку?' : 'Ошибка сети: ' + e.type); });
+  };
+  const fail = why => {
+    onlineSt(why + ' · повтор…');
+    if (tries < 20) setTimeout(go, 3000); else onlineSt(why);
+  };
+  go();
+}
+async function connect() {
+  const room = new URLSearchParams(location.search).get('room');
+  let viaNode = false;
+  try { const r = await fetch('./__dvp', { cache: 'no-store' }); viaNode = r.ok && (await r.text()) === 'node'; } catch { }
+  if (viaNode && !room) { NET = 'ws'; connectWS(); return; }
+  NET = 'p2p';
+  if (room) startGuest(room.toLowerCase().replace(/[^a-z0-9]/g, '')); else startHost();
+}
 
 function onMsg(m) {
   switch (m.t) {
@@ -116,6 +199,15 @@ function renderLobby() {
     d.innerHTML = p ? `<div class="av">${icon('user', '#2a1404')}</div><div class="nm">${esc(p.n)}${p.id === myId ? ' <span style="color:var(--mute);font-size:13px">(ты)</span>' : ''}</div><div class="st">${p.r ? 'готов' : 'не готов'}${p.host ? ' · хост' : ''}</div>`
       : `<div class="ico" style="width:74px;height:74px;border-radius:24px">${icon('link')}</div><div class="nm" style="color:var(--mute)">Ждём напарника…</div><div class="st">кинь ссылку ниже</div>`;
     el.appendChild(d);
+  }
+  if (NET === 'p2p') {
+    $('invUrl').textContent = lobby.url || 'комната создаётся…';
+    $('lanHint').innerHTML = p2pRole === 'host'
+      ? '<b style="color:var(--teal)">Ты хост.</b> Кидай другу ссылку — он откроет её и окажется в твоей комнате. Не закрывай эту вкладку, пока играете: мир живёт у тебя.'
+      : 'Ты в комнате друга. Хост держит мир у себя — если он закроет вкладку, игра прервётся.';
+    $('lReady').innerHTML = `<span class="ico">${icon('check')}</span>${amReady() ? 'Не готов' : 'Готов'}`;
+    if (lobby.phase === 'game' && phase !== 'game' && screen === 'sLobby') send({ t: 'hello', n: myName });
+    return;
   }
   const radmin = lobby.lan.find(u => u.startsWith('http://26.'));
   const others = lobby.lan.filter(u => u !== radmin);
