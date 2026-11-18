@@ -3,6 +3,8 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { FinalShader, makeSpaceEnv, sunFlare, Debris, Flashes, DmgNumbers } from './fx.js';
 import { buildShip, buildStation, buildSpace, Particles, makeAvatar, makeViewModel, WALK, WALK_DOCK, OBST, SEATS, TERMINALS, FIRE_SLOTS, DOCK_P, DOCK_APPROACH } from './world.js';
 import { makeCreature, animateCreature, CREATURE_COLORS, CREATURE_RAD } from './creatures.js';
 import { initAudio, sfx, setVolume, setEngine, setHiss, setIntensity } from './audio.js';
@@ -26,13 +28,19 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 const scene = new THREE.Scene(); scene.background = new THREE.Color(0x05040c);
 const camera = new THREE.PerspectiveCamera(SET.fov, innerWidth / innerHeight, 0.08, 16000);
-const composer = new EffectComposer(renderer);
+// MSAA прямо в цепочке пост-обработки — без лесенок на краях
+const rt = new THREE.WebGLRenderTarget(innerWidth, innerHeight, { type: THREE.HalfFloatType, samples: 4 });
+const composer = new EffectComposer(renderer, rt);
 composer.addPass(new RenderPass(scene, camera));
-const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.55, 0.45, 0.9);
-composer.addPass(bloom); composer.addPass(new OutputPass());
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.6, 0.5, 0.88);
+const finalPass = new ShaderPass(FinalShader);
+composer.addPass(bloom); composer.addPass(finalPass); composer.addPass(new OutputPass());
+scene.environment = makeSpaceEnv(renderer);
+scene.environmentIntensity = 0.55;
 function applySettings() {
   renderer.setPixelRatio(Math.min(devicePixelRatio, [0.7, 1, 2][SET.q]));
-  bloom.enabled = SET.q > 0;
+  bloom.enabled = SET.q > 0; finalPass.enabled = SET.q > 0;
+  rt.samples = SET.q > 0 ? 4 : 0;
   camera.fov = SET.fov; resize();
   setVolume(SET.vol, SET.mus);
 }
@@ -51,6 +59,8 @@ SH.group.add(camera);
 const vm = makeViewModel(); camera.add(vm.group); vm.group.children.forEach(c => { c.scale.setScalar(0.7); c.position.multiplyScalar(0.95); });
 const fx = new Particles(scene, 5000, true), fxN = new Particles(scene, 1500, false);
 const fxS = new Particles(SH.inner, 1500, true), fxSN = new Particles(SH.inner, 1200, false);
+const debris = new Debris(scene), flashes = new Flashes(scene), dmgNums = new DmgNumbers();
+const flare = sunFlare(V3(0.7, 0.45, 0.55).normalize().multiplyScalar(8000)); scene.add(flare);
 applySettings();
 
 // ---------- сеть ----------
@@ -407,7 +417,16 @@ function explode(p, s, c) {
   fx.burst(p, 16, new THREE.Color(0xffffff), 40 * k, 0.35, 1 * k, 0, 3);
   fx.emit(p.x, p.y, p.z, 0, 0, 0, new THREE.Color(0xfff0e0), 0.25, s * 5, 1);
   fxN.burst(p, 10 + s * 2, c.clone().multiplyScalar(0.6), 18 * k, 1.8, 1.2 * k, 0.5, 1.2);
+  debris.burst(p, Math.min(22, 5 + Math.round(s * 1.5)), c.getHex(), 0.35 * s, 22 * k);
+  flashes.add(p, 0xffd0a0, s * 6);
+  const d = camera.getWorldPosition(V3()).distanceTo(p); if (d < 220) shake = Math.min(1.5, shake + (1 - d / 220) * s * 0.15);
 }
+// хитмаркер
+const hitm = document.createElement('div');
+hitm.style.cssText = 'position:fixed;left:50%;top:50%;width:34px;height:34px;margin:-17px;pointer-events:none;z-index:9;opacity:0;transition:opacity .08s;background:conic-gradient(from 45deg,transparent 0 3%,#fff 3% 7%,transparent 7% 28%,#fff 28% 32%,transparent 32% 53%,#fff 53% 57%,transparent 57% 78%,#fff 78% 82%,transparent 82%);-webkit-mask:radial-gradient(circle,transparent 7px,#000 8px,#000 16px,transparent 17px);mask:radial-gradient(circle,transparent 7px,#000 8px,#000 16px,transparent 17px)';
+document.body.appendChild(hitm);
+let hitmT = 0, camKick = 0;
+function hitMarker(big) { hitmT = big ? 0.25 : 0.12; hitm.style.opacity = 1; hitm.style.filter = big ? 'drop-shadow(0 0 6px #ff5a6a) hue-rotate(-30deg)' : ''; sfx.click(); }
 
 // ---------- геометрия снарядов ----------
 const GEO = { bolt: new THREE.SphereGeometry(1, 8, 6), orb: new THREE.SphereGeometry(1, 14, 10), gem: new THREE.OctahedronGeometry(1.3), rocket: new THREE.CapsuleGeometry(0.35, 1.6, 4, 8) };
@@ -423,6 +442,7 @@ function spawnBolt(p, vel, k, mine) {
   mesh.position.copy(p); scene.add(mesh);
   const b = { mesh, p: p.clone(), v: vel.clone(), life: k === 'rk' ? 4 : 1.4, k, mine, dmg: 0, tgt: null };
   if (k !== 'rk') mesh.lookAt(p.clone().add(vel));
+  if (k !== 'rk') flashes.add(p, k === 'nose' ? 0xffc080 : 0x9ff8ff, k === 'nose' ? 3.2 : 2.2);
   bolts.push(b); return b;
 }
 const upg = () => (snap && snap.up) || { gun: 0, rate: 0, rockets: 0, repair: 0, engine: 0 };
@@ -440,7 +460,7 @@ function fireWeapons(dt) {
       const b = spawnBolt(o, vel, 'nose', true); b.dmg = 14 * (1 + 0.25 * u.gun);
       send({ t: 'shot', o: o.toArray().map(r2), d: vel.toArray().map(r2), k: 'nose' });
     }
-    sfx.laser(1);
+    sfx.laser(1); camKick = Math.min(0.05, camKick + 0.012);
   }
   if (me.seat === 'pilot' && PS.active && mouse.r && u.rockets > 0 && PS.rkCd <= 0) {
     PS.rkCd = 2.6;
@@ -461,7 +481,7 @@ function fireWeapons(dt) {
     const vel = dir.multiplyScalar(760).add(shipV);
     const b = spawnBolt(o, vel, 'tur', true); b.dmg = 9 * (1 + 0.22 * u.gun);
     send({ t: 'shot', o: o.toArray().map(r2), d: vel.toArray().map(r2), k: 'tur' });
-    sfx.turret();
+    sfx.turret(); piv.userData.recoil = 1; piv.userData.side = tGun; camKick = Math.min(0.04, camKick + 0.008);
   }
 }
 const r2 = x => Math.round(x * 100) / 100;
@@ -494,10 +514,11 @@ function updateBolts(dt) {
         if (closest.distanceToSquared(c) < R * R) {
           hit = true;
           if (b.mine) {
-            if (b.k === 'rk') { for (const [id2, E2] of ENT) { const d = E2.o.group.position.distanceTo(closest); if (d < 34) send({ t: 'hit', id: id2, d: Math.round(b.dmg * (1 - d / 50)) }); } }
-            else send({ t: 'hit', id, d: Math.round(b.dmg) });
+            if (b.k === 'rk') { for (const [id2, E2] of ENT) { const d = E2.o.group.position.distanceTo(closest); if (d < 34) { const dd = Math.round(b.dmg * (1 - d / 50)); send({ t: 'hit', id: id2, d: dd }); dmgNums.add(E2.o.group.position.clone().add(V3(0, CREATURE_RAD[E2.ty], 0)), dd, true); } } }
+            else { send({ t: 'hit', id, d: Math.round(b.dmg) }); dmgNums.add(closest, Math.round(b.dmg), b.dmg >= 20); }
+            hitMarker(E.hp - b.dmg <= 0);
           }
-          E.o.pop = 1;
+          E.o.pop = 1; E.o.flash = 1;
           const col = new THREE.Color(b.k === 'nose' ? 0xffb067 : b.k === 'rk' ? 0xffa040 : 0x8ffcff);
           fx.burst(closest, b.k === 'rk' ? 40 : 7, col, b.k === 'rk' ? 50 : 22, b.k === 'rk' ? 0.8 : 0.3, b.k === 'rk' ? 3 : 0.9, 1, 2.5);
           if (b.k === 'rk') sfx.boom(1.5, 0.8);
@@ -559,16 +580,27 @@ function walkable(x, z) {
 function updateWalk(dt) {
   if (!walkable(me.p.x, me.p.z)) me.p.set(0, 0, 8);
   const f = (keys.KeyW ? 1 : 0) - (keys.KeyS ? 1 : 0), r = (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0);
-  me.moving = (f || r) && !me.down && !me.dead && !chatOpen;
-  if (me.moving) {
-    const sp = (keys.ShiftLeft ? 6.2 : 4.2) * dt;
+  const wantMove = (f || r) && !me.down && !me.dead && !chatOpen;
+  // инерция тела: разгон и торможение, в прыжке управление слабее
+  me.vel = me.vel || new THREE.Vector2();
+  let wx = 0, wz = 0;
+  if (wantMove) {
+    const sp = keys.ShiftLeft ? 6.4 : 4.3;
     const fx_ = -Math.sin(me.yaw), fz = -Math.cos(me.yaw), rx = Math.cos(me.yaw), rz = -Math.sin(me.yaw);
-    let dx = fx_ * f + rx * r, dz = fz * f + rz * r; const l = Math.hypot(dx, dz); dx = dx / l * sp; dz = dz / l * sp;
-    const nx = me.p.x + dx, nz = me.p.z + dz;
-    if (walkable(nx, nz)) me.p.set(nx, 0, nz); else if (walkable(nx, me.p.z)) me.p.x = nx; else if (walkable(me.p.x, nz)) me.p.z = nz;
-    me.stepT += dt * (keys.ShiftLeft ? 1.5 : 1); if (me.stepT > 0.38 && me.y <= 0) { me.stepT = 0; sfx.step(); }
+    wx = fx_ * f + rx * r; wz = fz * f + rz * r; const l = Math.hypot(wx, wz); wx = wx / l * sp; wz = wz / l * sp;
   }
-  me.vy -= 13 * dt; me.y = Math.max(0, me.y + me.vy * dt); if (me.y <= 0) me.vy = 0;
+  const acc = me.y > 0 ? 2.5 : (wantMove ? 11 : 13);
+  me.vel.x += (wx - me.vel.x) * Math.min(1, dt * acc); me.vel.y += (wz - me.vel.y) * Math.min(1, dt * acc);
+  // корабль трясёт от попаданий — экипаж слегка сносит
+  if (shake > 0.3 && me.y <= 0) { me.vel.x += (Math.random() - 0.5) * shake * 6 * dt; me.vel.y += (Math.random() - 0.5) * shake * 6 * dt; }
+  const spd = me.vel.length(); me.moving = spd > 0.4;
+  if (spd > 0.01) {
+    const nx = me.p.x + me.vel.x * dt, nz = me.p.z + me.vel.y * dt;
+    if (walkable(nx, nz)) me.p.set(nx, 0, nz); else if (walkable(nx, me.p.z)) { me.p.x = nx; me.vel.y *= 0.3; } else if (walkable(me.p.x, nz)) { me.p.z = nz; me.vel.x *= 0.3; } else me.vel.set(0, 0);
+    me.stepT += dt * spd / 4.3; if (me.stepT > 0.4 && me.y <= 0) { me.stepT = 0; sfx.step(); }
+  }
+  const wasAir = me.y > 0;
+  me.vy -= 13 * dt; me.y = Math.max(0, me.y + me.vy * dt); if (me.y <= 0) { if (wasAir && me.vy < -3) me.land = Math.min(1, -me.vy / 8); me.vy = 0; }
 }
 
 // ---------- взаимодействие ----------
@@ -673,13 +705,21 @@ function updatePilot(dt) {
   const boosting = keys.ShiftLeft && PS.boost > 0 && PS.thr > 0.1;
   PS.boost = clamp(PS.boost + (boosting ? -32 : 14) * dt, 0, 100);
   const maxS = 105 * (1 + 0.15 * u.engine) * (boosting ? 1.9 : 1);
-  const fwd = V3(0, 0, -1).applyQuaternion(PS.q);
-  PS.v.lerp(fwd.multiplyScalar(PS.thr * maxS), 1 - Math.exp(-dt * (boosting ? 2 : 1.3)));
+  // ньютоновский полёт с ассистом: вдоль носа — тяга, поперёк — занос, который гасится не сразу
+  const fwd = V3(0, 0, -1).applyQuaternion(PS.q), up = V3(0, 1, 0).applyQuaternion(PS.q), right = V3(1, 0, 0).applyQuaternion(PS.q);
+  const vf = PS.v.dot(fwd), vu = PS.v.dot(up), vr = PS.v.dot(right);
+  const nf = vf + (PS.thr * maxS - vf) * (1 - Math.exp(-dt * (boosting ? 1.8 : 1.1)));
+  const strafeU = ((keys.Space ? 1 : 0) - (keys.KeyC ? 1 : 0)) * 38, strafeR = ((keys.KeyQ ? -1 : 0) + (keys.KeyZ ? 1 : 0)) * 0;
+  const drift = Math.exp(-dt * 0.9);
+  const nu = strafeU ? vu + (strafeU - vu) * (1 - Math.exp(-dt * 2.5)) : vu * drift, nr = vr * drift + strafeR;
+  PS.v.copy(fwd.multiplyScalar(nf)).addScaledVector(up, nu).addScaledVector(right, nr);
   PS.p.addScaledVector(PS.v, dt);
   PS.boosting = boosting;
+  PS.acc = PS.acc || V3(); PS.prevV = PS.prevV || PS.v.clone();
+  PS.acc.copy(PS.v).sub(PS.prevV).divideScalar(Math.max(dt, 1e-3)); PS.prevV.copy(PS.v);
   // столкновения
   PS.ramCd -= dt;
-  const bump = (c, r) => { const d = PS.p.clone().sub(c), l = d.length(); if (l < r) { d.normalize(); PS.p.copy(c).addScaledVector(d, r); const vn = PS.v.dot(d); if (vn < 0) { const spd = -vn; PS.v.addScaledVector(d, -vn * 1.5); if (spd > 18 && PS.ramCd <= 0) { PS.ramCd = 0.6; send({ t: 'ram', d: Math.round(spd * 0.3) }); shake = 1.2; } } } };
+  const bump = (c, r) => { const d = PS.p.clone().sub(c), l = d.length(); if (l < r) { d.normalize(); PS.p.copy(c).addScaledVector(d, r); const vn = PS.v.dot(d); if (vn < 0) { const spd = -vn; PS.v.addScaledVector(d, -vn * 1.5); if (spd > 18 && PS.ramCd <= 0) { PS.ramCd = 0.6; send({ t: 'ram', d: Math.round(spd * 0.3) }); shake = 1.2; PS.w.add(V3((Math.random() - 0.5) * spd * 0.04, (Math.random() - 0.5) * spd * 0.04, (Math.random() - 0.5) * spd * 0.06)); sfx.hit(true); fx.burst(PS.p.clone().addScaledVector(d, -r + 4), 30, new THREE.Color(0xffc080), 30, 0.6, 1.2, 1, 2); } } } };
   for (const r of space.rocks) if (Math.abs(r.p.x - PS.p.x) < r.r + 12 && Math.abs(r.p.z - PS.p.z) < r.r + 12) bump(r.p, r.r + 7);
   bump(V3(), 63);
   { const rr = Math.hypot(PS.p.x, PS.p.y) - 140, dz = PS.p.z; if (Math.hypot(rr, dz) < 21) { const a = Math.atan2(PS.p.y, PS.p.x); bump(V3(Math.cos(a) * 140, Math.sin(a) * 140, 0), 21); } }
@@ -743,6 +783,9 @@ function updateHUD(dt) {
 
 // ---------- кадр ----------
 let last = now(), menuT = 0, frame = 0;
+const CI = { init: false, q: new THREE.Quaternion(), p: new THREE.Vector3(), v: new THREE.Vector3(), ox: 0, oy: 0, oz: 0, roll: 0, pit: 0, fovK: 0 };
+// отражения окружения: металл блестит сильнее, интерьер — мягко
+scene.traverse(o => { if (o.material && o.material.isMeshStandardMaterial) o.material.envMapIntensity = o.material.metalness > 0.3 ? 1.2 : 0.45; });
 const camWorld = V3();
 function loop() {
   requestAnimationFrame(loop);
@@ -751,6 +794,7 @@ function loop() {
   // окружение
   station.ring.rotation.z += dt * 0.04; station.dockRing.rotation.z -= dt * 0.5;
   SH.holo.rotation.y += dt * 0.8; SH.holo.rotation.x += dt * 0.3;
+  SH.strobes.forEach((s, i) => { const ph = (t * (i < 2 ? 1 : 0.7) + i * 0.25) % 1; s.material.opacity = ph < 0.08 ? 1 : (i < 2 ? 0.35 : 0); });
   SH.reactor.material.emissiveIntensity = 2.3 + Math.sin(t * 3) * 0.5;
   camera.getWorldPosition(camWorld);
   const dp = space.dust.geometry.attributes.position, a = dp.array;
@@ -758,6 +802,7 @@ function loop() {
   dp.needsUpdate = true;
   space.stars.position.copy(camWorld); space.nebula.position.copy(camWorld);
   fx.update(dt); fxN.update(dt); fxS.update(dt); fxSN.update(dt);
+  debris.update(dt, fxN); flashes.update(dt); dmgNums.update(dt, camera);
   composer.render(dt);
 }
 function menuFrame(dt, t) {
@@ -801,25 +846,59 @@ function gameFrame(dt, t) {
   SH.hull.visible = inTurret; station.cradles.visible = inTurret; SH.halls.visible = docked;
   vm.group.visible = !me.seat && !me.down && !me.dead;
   camera.rotation.order = 'YXZ';
+  // инерция экипажа: корабль крутится и ускоряется — тело и голову ведёт следом
+  const sq = SH.group.quaternion, sp_ = SH.group.position;
+  if (!CI.init) { CI.q.copy(sq); CI.p.copy(sp_); CI.init = true; }
+  const dqi = CI.q.clone().invert().multiply(sq); const w = V3(dqi.x, dqi.y, dqi.z).multiplyScalar(2 / Math.max(dt, 1e-3));
+  const vel = sp_.clone().sub(CI.p).divideScalar(Math.max(dt, 1e-3));
+  const accL = vel.clone().sub(CI.v).divideScalar(Math.max(dt, 1e-3)).applyQuaternion(sq.clone().invert());
+  CI.q.copy(sq); CI.p.copy(sp_); CI.v.copy(vel);
+  if (docked || accL.length() > 2000) accL.set(0, 0, 0);
+  const kS = 1 - Math.exp(-dt * 5);
+  CI.ox += (clamp(-accL.x * 0.0016, -0.16, 0.16) - CI.ox) * kS; CI.oy += (clamp(-accL.y * 0.0016, -0.12, 0.12) - CI.oy) * kS; CI.oz += (clamp(-accL.z * 0.0018, -0.2, 0.2) - CI.oz) * kS;
+  CI.roll += (clamp(w.z * 0.06 + w.y * 0.05, -0.12, 0.12) - CI.roll) * kS; CI.pit += (clamp(w.x * 0.04, -0.08, 0.08) - CI.pit) * kS;
+  camKick *= Math.exp(-dt * 14); me.land = Math.max(0, (me.land || 0) - dt * 4);
   let shx = 0, shy = 0;
   shake = Math.max(0, shake - dt * 2.2); if (SET.shake && shake > 0) { shx = (Math.random() - 0.5) * shake * 0.12; shy = (Math.random() - 0.5) * shake * 0.12; }
-  if (me.down || me.dead) { camera.position.set(me.p.x, 0.35, me.p.z); camera.rotation.set(0.2, me.yaw, 0.6); }
-  else if (me.seat === 'pilot') { const c = SEATS.pilot.cam; camera.position.set(c[0] + shx, c[1] + shy, c[2]); camera.rotation.set(-0.04 + PS.w.x * 0.03, PS.w.y * 0.04, PS.w.z * 0.04); SH.stickTop.position.set(0.38 + stick.x * 0.08, 1.02, -8.05 + stick.y * 0.08); }
-  else if (inTurret) { const s = SEATS[me.seat], c = s.cam; camera.position.set(c[0] + shx, c[1] + shy, c[2]); camera.rotation.set(me.tpitch, s.yaw + me.tyaw, 0); }
+  if (me.down || me.dead) { camera.position.set(me.p.x, 0.35, me.p.z); camera.rotation.set(0.2, me.yaw, 0.6 + Math.sin(t * 1.3) * 0.05); }
+  else if (me.seat === 'pilot') {
+    const c = SEATS.pilot.cam; camera.position.set(c[0] + shx + CI.ox * 0.6, c[1] + shy + CI.oy * 0.6, c[2] - CI.oz * 0.8);
+    camera.rotation.set(-0.04 + PS.w.x * 0.03 + camKick, PS.w.y * 0.04, PS.w.z * 0.04);
+    SH.stickTop.position.set(0.38 + stick.x * 0.08, 1.02, -8.05 + stick.y * 0.08);
+  }
+  else if (inTurret) { const s = SEATS[me.seat], c = s.cam; camera.position.set(c[0] + shx + CI.ox * 0.5, c[1] + shy + CI.oy * 0.5, c[2] - CI.oz * 0.5); camera.rotation.set(me.tpitch + camKick + CI.pit * 0.5, s.yaw + me.tyaw, CI.roll * 0.6); }
   else {
-    const bob = me.moving && me.y <= 0 ? Math.sin(t * (keys.ShiftLeft ? 14 : 10)) * 0.045 : 0;
-    camera.position.set(me.p.x + shx, 1.62 + me.y + bob + shy, me.p.z); camera.rotation.set(me.pitch, me.yaw, 0);
-    vm.group.position.set(Math.cos(t * 5) * (me.moving ? 0.015 : 0.003), bob * 0.5 + (me.tool ? 0.04 : 0), me.tool ? -0.05 : 0);
+    const bobAmt = clamp(((me.vel && me.vel.length()) || 0) / 4.3, 0, 1.5);
+    const ph = t * (keys.ShiftLeft ? 13 : 10);
+    const bob = me.y <= 0 ? Math.sin(ph) * 0.045 * bobAmt : 0, sway = Math.cos(ph * 0.5) * 0.03 * bobAmt;
+    camera.position.set(me.p.x + shx + CI.ox, 1.62 + me.y + bob + shy + CI.oy - me.land * 0.18, me.p.z - CI.oz);
+    camera.rotation.set(me.pitch + CI.pit - me.land * 0.06, me.yaw, CI.roll + sway * 0.4 - (me.vel ? (me.vel.x * Math.cos(me.yaw) - me.vel.y * Math.sin(me.yaw)) * 0.006 : 0));
+    vm.group.position.set(sway + Math.cos(t * 1.6) * 0.004, bob * 0.5 + Math.sin(t * 1.6) * 0.004 + (me.tool ? 0.04 : 0) - me.land * 0.05 + CI.oy * 0.3, (me.tool ? -0.05 : 0) - CI.oz * 0.3);
+    vm.group.rotation.set(CI.pit * 0.5, 0, CI.roll * 0.5);
     vm.r.rotation.x = me.tool ? -0.15 + Math.sin(t * 40) * 0.01 : 0;
     vm.tip.scale.setScalar(me.tool ? 1.5 + Math.random() * 0.4 : 1);
   }
+  // FOV и эффекты скорости
+  const boostK = PS.active && PS.boosting ? 1 : 0;
+  CI.fovK += (boostK - CI.fovK) * Math.min(1, dt * 3);
+  const wantFov = SET.fov + CI.fovK * 10 + clamp((shipSpeed - 110) / 20, 0, 4);
+  if (Math.abs(camera.fov - wantFov) > 0.05) { camera.fov = wantFov; camera.updateProjectionMatrix(); }
+  finalPass.uniforms.uTime.value = t % 100; finalPass.uniforms.uSpeed.value = CI.fovK * (me.seat ? 1 : 0.3);
+  finalPass.uniforms.uHurt.value = Math.max(dmgFlash * 0.8, me.hp < 30 && !me.dead ? 0.35 + Math.sin(t * 5) * 0.15 : 0);
+  hitmT -= dt; if (hitmT <= 0) hitm.style.opacity = 0;
   camera.updateMatrixWorld();
   // турели смотрят туда же, куда стрелок
   for (const id of ['tl', 'tr']) {
     const piv = SH.turretGuns[id];
+    if (!piv.userData.base) piv.userData.base = piv.position.clone();
+    piv.position.copy(piv.userData.base);
     if (me.seat === id) piv.lookAt(camera.localToWorld(V3(0, 0, -300)));
     else { const m = mateList().find(m => m.st && m.st.s === id); if (m) { const yaw = SEATS[id].yaw + m.st.y, pi = m.st.pi; const d = V3(-Math.sin(yaw) * Math.cos(pi), Math.sin(pi), -Math.cos(yaw) * Math.cos(pi)); piv.lookAt(SH.group.localToWorld(piv.position.clone().addScaledVector(d, 300))); } }
+    // отдача ствола
+    const rc = piv.userData.recoil || 0; if (rc > 0) { piv.translateZ(-rc * 0.35); piv.userData.recoil = Math.max(0, rc - dt * 12); }
   }
+  // рычаг тяги в кабине
+  if (SH.throttle) SH.throttle.rotation.x = -0.6 + Math.max(0, PS.active ? PS.thr : 0) * 1.1;
   // шлюзы
   SH.outerDoors.forEach(d => { const want = docked ? 9.75 : 8; d.position.z += (want - d.position.z) * Math.min(1, dt * 3); });
   // напарник
@@ -859,7 +938,7 @@ function gameFrame(dt, t) {
 }
 
 // ---------- старт ----------
-window.__g = { me, PS, send, SH, keys, stick, mouse };
+window.__g = { me, PS, send, SH, keys, stick, mouse, ENT };
 connect();
 $('whoName').textContent = myName;
 setTimeout(() => { $('loading').style.display = 'none'; show(myName ? 'sMenu' : 'sName'); if (!myName) $('nameIn').focus(); }, 300);
