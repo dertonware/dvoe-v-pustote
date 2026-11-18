@@ -3,6 +3,7 @@ import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.j
 import { hullTextures, panelTextures, floorTextures, makePlanetTex, makeMoonTex, makeRings } from './fx.js';
 import { buildHullModel } from './shipmodel.js';
 import { makeAirlockDoor, makePilotSeat, makeTerminal, makePlant, makeCrate } from './props.js';
+import { buildStationInterior } from './station.js';
 
 // ---------- общие материалы ----------
 const std = (color, o = {}) => new THREE.MeshStandardMaterial(Object.assign({ color, roughness: 0.72, metalness: 0.04 }, o));
@@ -90,7 +91,7 @@ export const WALK = [
 ];
 export const WALK_HALLS = [[4.85, 14.6, 3.35, 12.65], [-14.6, -4.85, 3.35, 12.65]];
 export const WALK_DOOR = [[-5.8, -4.0, 7.6, 8.4], [4.0, 5.8, 7.6, 8.4]]; // [левый, правый]
-export const OBST = [[0, 1, 0.75], [0, 10.1, 0.95], [0, -7.75, 0.5], [-10, 3.6, 0.6], [-10, 12.4, 0.6], [10, 3.6, 0.6], [10, 12.4, 0.6], [13.4, 7, 0.5], [-13.4, 7, 0.5], [13.4, 8, 0.5], [-13.4, 8, 0.5], [13.4, 9, 0.5], [-13.4, 9, 0.5]];
+export const OBST = [[0, 1, 0.75], [0, 10.1, 0.95], [0, -7.75, 0.5], [-10, 3.6, 0.6], [-9.6, 12.4, 0.6], [10, 3.6, 0.6], [9.6, 12.4, 0.6], [13.4, 7, 0.5], [-13.4, 7, 0.5], [13.4, 8, 0.5], [-13.4, 8, 0.5], [13.4, 9, 0.5], [-13.4, 9, 0.5]];
 export const SEATS = {
   pilot: { p: [0, 0, -7.75], cam: [0, 1.5, -7.95], yaw: 0, label: 'сесть за штурвал' },
   tl: { p: [-5.15, 0, 1], cam: [-5.05, 1.38, 1], yaw: Math.PI / 2, label: 'сесть за левую турель' },
@@ -98,9 +99,9 @@ export const SEATS = {
 };
 export const TERMINALS = [
   { id: 'shop', p: [-10, 0, 3.6], label: 'Магазин улучшений' },
-  { id: 'repair', p: [-10, 0, 12.4], label: 'Ремонтный док' },
+  { id: 'repair', p: [-9.6, 0, 12.4], label: 'Ремонтный док' },
   { id: 'missions', p: [10, 0, 3.6], label: 'Терминал миссий' },
-  { id: 'med', p: [10, 0, 12.4], label: 'Медотсек' },
+  { id: 'med', p: [9.6, 0, 12.4], label: 'Медотсек' },
 ];
 export const FIRE_SLOTS = [[0, 0, -8.2], [1.4, 0, -6.2], [0, 0, -3.2], [-2.2, 0, -0.6], [2.2, 0, 2.6], [0, 0, 1], [0, 0, 4.8], [-2.1, 0, 7.2], [2.1, 0, 9.6], [0, 0, 9.2]];
 export const DOCK_P = new THREE.Vector3(0, 0, 230), DOCK_APPROACH = new THREE.Vector3(0, 0, 265);
@@ -239,7 +240,7 @@ export function buildShip() {
   const lampPanel = new THREE.MeshStandardMaterial({ color: 0xfff4e6, emissive: 0xfff0dc, emissiveIntensity: 0.85 });
   for (const sx of [-1, 1]) {
     const x0 = sx < 0 ? -15 : 4.5, x1 = sx < 0 ? -4.5 : 15, far = sx < 0 ? 'w' : 'e', near = sx < 0 ? 'e' : 'w';
-    room(halls, x0, x1, 3, 13, { [near]: [[7.2, 8.8]] }, { wall: hallMat, floor: hallFloor, strip: sx < 0 ? MAT.orange : MAT.teal, skip: [far] });
+    room(halls, x0, x1, 3, 13, { [near]: [[7.2, 8.8]], s: [sx < 0 ? [-13.6, -11.6] : [11.6, 13.6]] }, { wall: hallMat, floor: hallFloor, strip: sx < 0 ? MAT.orange : MAT.teal, skip: [far] });
     // дальняя стена — панорамное окно в космос
     const fx = sx * 15;
     tileBox(T, 0.9, 10, 0.05, hallMat, halls, fx, 0.45, 8); tileBox(T, 0.5, 10, 0.05, hallMat, halls, fx, 2.55, 8);
@@ -256,15 +257,17 @@ export function buildShip() {
       : [['missions', 'Терминал миссий', 'Контракты сектора', '#5ff6ff', 3.6, Math.PI], ['med', 'Медотсек', 'Лечение экипажа бесплатно', '#7dffb0', 12.4, 0]];
     for (const [id, title, sub, col, z, rot] of defs) { const t = makeTerminal(id, title, sub, col); t.g.position.set(sx * 10, 0, z); t.g.rotation.y = rot; halls.add(t.g); terminals[id] = t; }
     // растения и груз
-    for (const [x, z, k] of [[5.4, 3.7, 1], [5.4, 12.3, 2], [14.2, 3.7, 3], [14.2, 12.3, 4]]) { const p = makePlant(k + (sx > 0 ? 5 : 0)); p.position.set(sx * x, 0, z); halls.add(p); }
+    for (const [x, z, k] of [[5.4, 3.7, 1], [5.4, 12.3, 2], [14.2, 3.7, 3], [14.4, 12.3, 4]]) { const p = makePlant(k + (sx > 0 ? 5 : 0)); p.position.set(sx * x, 0, z); halls.add(p); }
     for (const [x, z, sz, y] of [[7.2, 12.2, 0.9, 0], [8.2, 12.25, 0.75, 0], [7.4, 12.2, 0.7, 0.9]]) { const c = makeCrate(sz); c.position.set(sx * x, y, z); c.rotation.y = x * 0.3; halls.add(c); }
     const sign = textSprite(sx < 0 ? '◆ ТОРГОВОЕ КРЫЛО' : 'ЦЕНТР МИССИЙ ◆', sx < 0 ? '#ffb067' : '#5ff6ff', 1.4); sign.position.set(sx * 13.9, 2.45, 8); halls.add(sign);
     const sd = textSprite('ШЛЮЗ · DV-07', '#ffd05f', 0.8); sd.position.set(sx * 4.8, 2.65, 8); halls.add(sd);
     const hl = new THREE.PointLight(sx < 0 ? 0xffd2a0 : 0xbfe8ff, 0, 18, 1.4); hl.position.set(sx * 9.7, 2.5, 8); I.add(hl); hallLights.push(hl);
   }
+  const stationIn = buildStationInterior(halls); // большой атриум станции — за южными проходами залов
+  for (const id of ['repair', 'med']) { const tm = terminals[id]; if (tm) tm.g.position.x = Math.sign(tm.g.position.x) * 9.6; }
   halls.visible = false;
 
-  return { group: ship, inner, hull, holo, holoCone, reactor, lights, alarm, turretGuns, turretSeats, doors, terminals, halls, stickTop, throttle, strobes: model.strobes, nozzles: model.nozzles, rcs: model.rcs, hallLights, fireLights };
+  return { group: ship, inner, hull, holo, holoCone, reactor, lights, alarm, turretGuns, turretSeats, doors, terminals, halls, stationIn, stickTop, throttle, strobes: model.strobes, nozzles: model.nozzles, rcs: model.rcs, hallLights, fireLights };
 }
 
 // ---------- СТАНЦИЯ ----------

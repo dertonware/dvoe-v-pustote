@@ -108,6 +108,7 @@ kbd{font-family:Unbounded;font-size:12px;min-width:36px;padding:7px 9px;text-ali
 .chip{background:var(--panel);border-radius:16px;padding:8px 14px 8px 8px;display:flex;align-items:center;gap:10px;font-family:Unbounded;font-size:16px}
 .chip .ico{width:32px;height:32px;border-radius:10px}
 .chip .ico svg{width:19px;height:19px}
+.qrow{font-size:12px;color:var(--mute);margin-top:6px;display:flex;justify-content:space-between;gap:10px}.qrow b{color:var(--teal);font-weight:700}.qrow.qdone b{color:var(--green)}
 #prompt{position:absolute;left:50%;top:62%;transform:translateX(-50%);font-weight:700;font-size:17px;padding:10px 18px;border-radius:14px;background:rgba(10,10,24,.7);display:none;white-space:nowrap}
 #prompt kbd{margin-right:8px}
 #holdbar{position:absolute;left:50%;top:calc(62% + 52px);transform:translateX(-50%);width:200px;height:8px;border-radius:5px;background:rgba(0,0,0,.5);overflow:hidden;display:none}
@@ -238,7 +239,7 @@ kbd{font-family:Unbounded;font-size:12px;min-width:36px;padding:7px 9px;text-ali
     <div class="k"><kbd>G</kbd>стыковка / отстыковка</div><div class="k"><kbd>Enter</kbd>чат</div>
     <div class="k"><kbd>Esc</kbd>пауза / курсор</div><div class="k"><kbd>Shift</kbd>пешком — бег</div>
   </div>
-  <p class="hint">Стыковка: подлетите медленно к кольцу у станции (жёлтая метка «ДОК»), нажмите G. На станции — левое крыло: магазин и ремонт, правое: миссии и медотсек. Выход — через шлюзы в машинном отсеке.</p>
+  <p class="hint">Старт — на станции «Улей-7». Правое крыло: миссии и медотсек, левое: магазин и ремонт. За крыльями — большой атриум: бар, лавка, NPC с заданиями (жёлтый «!» над головой — есть задание, зелёный «?» — сдать). На корабль — через шлюз: подойди к двери и нажми E, дождись выравнивания давления. Перед отстыковкой (G за штурвалом) шлюзы нужно закрыть. Стыковка: медленно к жёлтому кольцу у станции, G.</p>
   <div class="row end" style="margin-top:14px"><span></span><button class="btn" id="helpBack"><span class="ico" data-i="check"></span>Понял</button></div>
 </div></div>
 
@@ -251,7 +252,7 @@ kbd{font-family:Unbounded;font-size:12px;min-width:36px;padding:7px 9px;text-ali
     <div class="bar" id="stBar" style="display:none"><span class="ico" data-i="station" style="background:linear-gradient(160deg,#c9b6ff,#7a5cff)"></span><div class="tr"><div class="fl" id="bSt" style="background:linear-gradient(90deg,#7a5cff,#c9b6ff)"></div><div class="tx" id="tSt"></div></div></div>
     <div class="mate" id="mate" style="display:none"><span class="ico" data-i="user" style="width:30px;height:30px;border-radius:10px"></span><div><b id="mName"></b><div id="mSt" style="color:var(--mute)"></div></div></div>
   </div>
-  <div class="mission" id="mis"><span class="ico" data-i="target"></span><div style="flex:1"><div class="tt" id="misT"></div><div class="pp" id="misP"></div><div class="pb"><i id="misB"></i></div></div></div>
+  <div class="mission" id="mis"><span class="ico" data-i="target"></span><div style="flex:1"><div class="tt" id="misT"></div><div class="pp" id="misP"></div><div class="pb"><i id="misB"></i></div><div id="quests"></div></div></div>
   <div class="money"><div class="chip"><span class="ico" data-i="gem" style="background:linear-gradient(160deg,#a8fbff,#5f7dff)"></span><span id="cr">0</span></div><div class="chip" style="font-size:13px"><span class="ico" data-i="map"></span>Сектор <span id="sec">1</span></div></div>
   <div id="marks"></div>
   <div id="cross"></div><div id="reticle"></div><div id="stick"></div><div id="tcross"></div>

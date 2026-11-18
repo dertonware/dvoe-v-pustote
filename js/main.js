@@ -7,6 +7,7 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { FinalShader, makeSky, makeSpaceEnvFrom, SunFlare, SUN_DIR, makePlume, Debris, Flashes, DmgNumbers } from './fx.js';
 import { buildShip, buildStation, buildSpace, Particles, makeAvatar, WALK, WALK_HALLS, WALK_DOOR, OBST, SEATS, TERMINALS, FIRE_SLOTS, DOCK_P, DOCK_APPROACH } from './world.js';
 import { makeViewModel } from './props.js';
+import { STATION_WALK, STATION_OBST, STATION_OBST_R, setNPCMarker } from './station.js';
 import { makeCreature, animateCreature, CREATURE_COLORS, CREATURE_RAD } from './creatures.js';
 import { initAudio, sfx, setVolume, setEngine, setHiss, setIntensity } from './audio.js';
 import { icon, fillIcons } from './icons.js';
@@ -639,6 +640,62 @@ function updateFires(dt, t) {
   alarmT -= dt; if (any && !docked && alarmT <= 0) { alarmT = 2.2; sfx.alarm(); }
 }
 
+// ---------- станция: NPC, задания, диалоги ----------
+const NPC_LINES = {
+  vors: ['Двадцать лет вожу конвои через этот сектор. Таких тварей ещё не видал.', 'Держите щиты заряженными, пилоты. Медузы бьют издалека.', 'Улей-7 стоит, пока стоят такие, как вы.'],
+  zina: ['Опять пробоина? Тащи сюда, залатаю. Шучу — сам латай, инструмент у тебя есть.', 'Реактор у вас дышит неровно. Не гоняйте форсаж без нужды.', 'Пожар тушится струёй под основание пламени. Запомни.'],
+  hlup: ['Хлюп продаёт! Хлюп покупает! Хлюп не задаёт вопросов!', 'Зубы червя — лучший товар. Хлюп знает.', 'Ты не видел Хлюпа. Хлюп не видел тебя. Хлюп?'],
+  okto: ['Что будешь? «Глорп» — фирменный. Восемь щупалец, восемь вкусов.', 'Слыхал — в третьем секторе проснулась Матка. Огромная. Злющая.', 'Говорят, если тушить пожар в шлеме — уши не обжечь. Врут.', 'Пилоты, которые не возвращаются, всегда оставляют чаевые заранее.'],
+  w1: ['Какая красивая станция! А тварей отсюда видно?'], w2: ['Не стой на пути, груз везу.'], w3: ['Мой первый вылет завтра. Страшно...'],
+};
+let dialogNpc = null;
+function talkTo(n) {
+  const lines = NPC_LINES[n.id] || ['...'];
+  n.talkT = 3; n.line = lines[Math.floor(Math.random() * lines.length)];
+  if (n.path) { toast(n.name + ': ' + n.line, 'chat'); return; }
+  dialogNpc = n; openPanel('npc');
+}
+const QTY = { je: 'медуз', sw: 'летучих глаз', wo: 'червей', ne: 'гнёзд' };
+function npcPanel(B) {
+  const n = dialogNpc; if (!n) return;
+  $('pTitle').textContent = n.name;
+  const q = snap && snap.qs && snap.qs.find(x => x.npc === n.id);
+  let qhtml = '';
+  if (q) {
+    const st = { offer: 'Новое задание', active: 'В процессе', done: 'Выполнено — забери награду', claimed: 'Сдано' }[q.s];
+    const btn = q.s === 'offer' ? '<button class="btn" data-q="take">Взять задание</button>' : q.s === 'done' ? '<button class="btn teal" data-q="claim">Сдать — +◆ ' + q.r + '</button>' : '';
+    qhtml = '<div class="it" style="margin-top:14px"><div class="row" style="justify-content:space-between"><div class="nm">' + esc(q.t) + '</div><span class="hint">' + st + '</span></div><div class="ds">' + esc(q.x) + '</div>'
+      + (q.s !== 'offer' ? '<div class="pb" style="height:8px;border-radius:5px;background:rgba(0,0,0,.4);overflow:hidden"><i style="display:block;height:100%;width:' + Math.min(100, q.p / q.g * 100) + '%;background:var(--teal)"></i></div><div class="hint">' + q.p + ' / ' + q.g + ' ' + (QTY[q.ty] || '') + '</div>' : '')
+      + '<div class="row" style="justify-content:space-between"><b style="font-family:Unbounded;color:var(--orange2)">Награда: ◆ ' + q.r + '</b>' + btn + '</div></div>';
+  }
+  B.innerHTML = '<div class="row" style="gap:18px;align-items:flex-start"><span class="ico" style="width:72px;height:72px;border-radius:22px;background:linear-gradient(160deg,#ffb067,#d95f22)">' + icon('user', '#2a1404') + '</span><div style="flex:1"><div class="it" style="border-radius:22px 22px 22px 6px"><div class="ds" style="font-size:17px;color:var(--text)">«' + esc(n.line || '') + '»</div></div>' + qhtml + '</div></div>'
+    + '<div class="row end" style="margin-top:14px"><button class="btn ghost" data-q="more">Ещё поболтать</button><span></span></div>';
+  B.querySelectorAll('[data-q]').forEach(b => b.onclick = () => {
+    const a = b.dataset.q;
+    if (a === 'more') { const L = NPC_LINES[n.id] || ['...']; n.line = L[Math.floor(Math.random() * L.length)]; n.talkT = 3; renderPanel(true); return; }
+    if (q) send({ t: 'quest', id: q.id, a });
+  });
+}
+function updateStation(dt, t) {
+  const st = SH.stationIn; if (!st) return;
+  const on = docked && phase === 'game';
+  st.lights.forEach((l, i) => l.intensity = on ? (i === 3 ? 3 : 7) : 0);
+  if (!SH.halls.visible) return;
+  st.holo.rotation.y += dt * 0.25; st.mini.rotation.y += dt * 0.4;
+  st.water.material.emissiveIntensity = 0.5 + Math.sin(t * 2) * 0.15;
+  for (const n of st.npcs) {
+    n.update(dt, t, me.p);
+    const q = snap && snap.qs && snap.qs.find(x => x.npc === n.id);
+    setNPCMarker(n, q && (q.s === 'offer' || q.s === 'done') ? q.s : null);
+  }
+  if (Math.random() < dt * 25) { const a = Math.random() * 6.28, r = Math.random() * 2.6; fxS.emit(Math.cos(a) * r, 0.6, 28 + Math.sin(a) * r, 0, 0.5 + Math.random(), 0, new THREE.Color(0.4, 0.95, 1), 1.2, 0.12, 0, 0.3); }
+}
+function updateQuestHud() {
+  const box = $('quests'); if (!box || !snap || !snap.qs) return;
+  const act = snap.qs.filter(q => q.s === 'active' || q.s === 'done');
+  box.innerHTML = act.map(q => '<div class="qrow' + (q.s === 'done' ? ' qdone' : '') + '">' + esc(q.t) + ' <b>' + (q.s === 'done' ? '✓ сдать' : q.p + '/' + q.g) + '</b></div>').join('');
+}
+
 // ---------- шлюзы: выравнивание давления → створки → герметизация ----------
 const _dv = V3();
 function doorDist(d) { return camera.getWorldPosition(V3()).distanceTo(SH.group.localToWorld(V3(d.sx * 4.5, 1.4, 8))); }
@@ -675,12 +732,17 @@ function updateDoors(dt, t) {
 
 // ---------- ходьба ----------
 function walkable(x, z) {
-  let rects = docked ? WALK.concat(WALK_HALLS) : WALK;
+  let rects = docked ? WALK.concat(WALK_HALLS, STATION_WALK) : WALK;
   if (docked) SH.doors.forEach((d, i) => { if (d.t > 0.85) rects = rects.concat([WALK_DOOR[i]]); }); // в проём — только когда створки разъехались
   let ok = false;
   for (const r of rects) if (x >= r[0] && x <= r[1] && z >= r[2] && z <= r[3]) { ok = true; break; }
   if (!ok) return false;
   for (const o of OBST) if (Math.hypot(x - o[0], z - o[1]) < o[2] + 0.3) return false;
+  if (docked && z > 16) {
+    for (const o of STATION_OBST) if (Math.hypot(x - o[0], z - o[1]) < o[2] + 0.3) return false;
+    for (const r of STATION_OBST_R) if (x > r[0] - 0.3 && x < r[1] + 0.3 && z > r[2] - 0.3 && z < r[3] + 0.3) return false;
+    for (const n of SH.stationIn.npcs) if (!n.path && Math.hypot(x - n.g.position.x, z - n.g.position.z) < 0.6) return false;
+  }
   return true;
 }
 function updateWalk(dt) {
@@ -723,6 +785,7 @@ function findInteract() {
   const taken = s => mateList().some(m => m.st && m.st.s === s);
   for (const k in SEATS) { const s = SEATS[k]; if (Math.hypot(s.p[0] - px, s.p[2] - pz) < 1.7) return taken(k) ? { kind: 'none', text: 'Место занято напарником' } : { kind: 'sit', seat: k, text: '<kbd>E</kbd>' + s.label }; }
   if (docked) for (const t of TERMINALS) if (Math.hypot(t.p[0] - px, t.p[2] - pz) < 2.3) return { kind: 'term', id: t.id, text: '<kbd>E</kbd>' + t.label };
+  if (docked) for (const n of SH.stationIn.npcs) { const d = Math.hypot(n.g.position.x - px, n.g.position.z - pz); if (d < (n.talk || 1.8)) return { kind: 'npc', n, text: '<kbd>E</kbd>поговорить: ' + esc(n.name) }; }
   // шлюзы: открыть/закрыть с обеих сторон двери
   for (let i = 0; i < SH.doors.length; i++) {
     const d = SH.doors[i], dx = px - d.sx * 4.5, dz = pz - 8;
@@ -740,6 +803,7 @@ function onUse() {
   else if (a.kind === 'sit') { send({ t: 'sit', s: a.seat }); me.seatLock = now() + 0.6; setSeat(a.seat); }
   else if (a.kind === 'term') openPanel(a.id);
   else if (a.kind === 'door') send({ t: 'door', i: a.i });
+  else if (a.kind === 'npc') talkTo(a.n);
 }
 function updateInteract(dt) {
   promptAct = findInteract();
@@ -774,10 +838,11 @@ function closePanel() { panelOpen = null; show(''); lockPointer(); }
 $('pClose').onclick = closePanel;
 function renderPanel(force) {
   if (!snap) return;
-  const hash = panelOpen + JSON.stringify([snap.cr, snap.up, snap.mi && snap.mi.label, Math.round(snap.ship.hull), snap.fi.length]);
+  const hash = panelOpen + JSON.stringify([snap.cr, snap.up, snap.mi && snap.mi.label, Math.round(snap.ship.hull), snap.fi.length, snap.qs && snap.qs.map(q => q.s + q.p)]);
   if (!force && hash === panelHash) return; panelHash = hash;
   $('pCr').textContent = snap.cr;
   const B = $('pBody');
+  if (panelOpen === 'npc') { npcPanel(B); return; }
   if (panelOpen === 'shop') {
     $('pTitle').textContent = 'Магазин улучшений';
     B.innerHTML = '<div class="grid">' + Object.keys(SHOPDEF).map(k => {
@@ -1031,6 +1096,7 @@ function gameFrame(dt, t) {
   // шлюзы
   updateDoors(dt, t);
   for (const id in SH.terminals) SH.terminals[id].holo.rotation.y += dt * 1.2;
+  updateStation(dt, t);
   // напарник
   for (const a of mates.values()) {
     const st = a.st; if (!st) continue;
@@ -1057,7 +1123,7 @@ function gameFrame(dt, t) {
   for (const L of LOOT.values()) { L.mesh.position.lerp(L.tp, 1 - Math.exp(-dt * 8)); L.mesh.rotation.y += dt * 3; L.mesh.rotation.x += dt; }
   updateBolts(dt);
   updateFires(dt, t);
-  updateHUD(dt);
+  updateHUD(dt); updateQuestHud();
   // отправка аватара
   if (t - lastAv > 0.05) {
     lastAv = t;
@@ -1068,7 +1134,7 @@ function gameFrame(dt, t) {
 }
 
 // ---------- старт ----------
-window.__g = { me, PS, send, SH, keys, stick, mouse, ENT, tick: (n = 1, dt = 0.05) => { for (let i = 0; i < n; i++) { if (phase === "game") gameFrame(dt, now()); } } };
+window.__g = { me, PS, send, SH, keys, stick, mouse, ENT, tick: (n = 1, dt = 0.05) => { for (let i = 0; i < n; i++) { if (phase === "game") gameFrame(dt, now()); } fx.update(dt); fxN.update(dt); fxS.update(dt); fxSN.update(dt); composer.render(dt); } };
 // прогрев: всё, что может появиться в бою, компилируется сейчас, а не посреди перестрелки (иначе фризы)
 function prewarm() {
   const tmp = [], base = camera.getWorldPosition(V3()).add(V3(0, 0, -60));

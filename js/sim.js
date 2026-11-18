@@ -50,7 +50,9 @@ function newGame() {
     station: { hp: 1500, hm: 1500 },
     mission: null, offers: [], waveT: 0,
     doors: [false, false], // шлюзы: [левый, правый]
+    quests: [],
   };
+  refreshQuests();
   S.offers = makeOffers(1);
   for (const p of players.values()) resetPlayer(p);
 }
@@ -68,6 +70,20 @@ function makeOffers(sec) {
     { type: 'nests', label: 'Выжечь гнёзда', desc: 'Найдите и сожгите ' + (2 + Math.floor(sec / 2)) + ' гнезда.', goal: 2 + Math.floor(sec / 2), reward: 240 + sec * 70 },
     { type: 'defend', label: 'Оборона станции', desc: 'Держите станцию ' + (80 + sec * 10) + ' секунд.', goal: 80 + sec * 10, reward: 220 + sec * 65 },
   ];
+}
+
+// ---------- задания NPC станции «Улей-7» ----------
+const QUEST_GIVERS = {
+  vors: { name: 'Капитан Ворс', mk: sec => ({ title: 'Медузья напасть', text: 'Медузы плюются кислотой по моим конвоям. Сбейте ' + (6 + sec * 2) + ' штук — заплачу как следует.', ty: 'je', goal: 6 + sec * 2, reward: 160 + sec * 60 }) },
+  zina: { name: 'Механик Зина', mk: sec => ({ title: 'Глазастая мелочь', text: 'Эти летающие глаза лезут в вентиляцию станции. Убейте ' + (14 + sec * 4) + ' — и я в долгу не останусь.', ty: 'sw', goal: 14 + sec * 4, reward: 140 + sec * 55 }) },
+  hlup: { name: 'Торговец Хлюп', mk: sec => ({ title: 'Червивый товар', text: 'Хлюп платить за зубы червей! Хлюп нужно ' + (2 + Math.ceil(sec / 2)) + ' червя. Быстро-быстро!', ty: 'wo', goal: 2 + Math.ceil(sec / 2), reward: 200 + sec * 70 }) },
+};
+function questFor(npc, sec) { const q = QUEST_GIVERS[npc].mk(sec); return Object.assign({ id: nextId++, npc, npcName: QUEST_GIVERS[npc].name, prog: 0, state: 'offer' }, q); }
+function refreshQuests() { // у каждого NPC — одно задание; сданные заменяются новыми
+  for (const npc of Object.keys(QUEST_GIVERS)) {
+    const cur = S.quests.find(q => q.npc === npc);
+    if (!cur || cur.state === 'claimed') { S.quests = S.quests.filter(q => q !== cur); S.quests.push(questFor(npc, S.sector)); }
+  }
 }
 
 // ---------- enemies ----------
@@ -115,6 +131,7 @@ function spawnFire(kind) {
 function killEnemy(e) {
   S.enemies = S.enemies.filter(x => x !== e);
   S.kills++;
+  for (const q of S.quests) if (q.state === 'active' && q.ty === e.type) { q.prog++; if (q.prog >= q.goal) { q.state = 'done'; toast('Задание «' + q.title + '» выполнено — вернитесь к ' + q.npcName, 'green'); ev({ k: 'done' }); } }
   const n = { sw: 1, je: 3, wo: 4, ne: 10, bo: 36 }[e.type], val = { sw: 6, je: 9, wo: 11, ne: 16, bo: 30 }[e.type];
   for (let i = 0; i < n; i++) S.loot.push({ id: nextId++, p: add(e.p, mul(rdir(), rnd(0, ERAD[e.type]))), v: mul(rdir(), rnd(5, 25)), val, life: 40 });
   ev({ k: 'boom', p: r3(e.p), s: ERAD[e.type], ty: e.type });
@@ -356,6 +373,7 @@ function onDocked() {
     S.sector++;
     S.mission = null; S.enemies = [];
     S.offers = makeOffers(S.sector);
+    refreshQuests();
     ev({ k: 'sector', n: S.sector });
   }
 }
@@ -379,6 +397,7 @@ function snapshot() {
     fi: S.fires.map(f => [f.id, f.slot, f.kind, Math.round(f.hp)]),
     cr: S.credits, sec: S.sector, kills: S.kills,
     mi: S.mission ? { type: S.mission.type, label: S.mission.label, goal: S.mission.goal, prog: Math.floor(S.mission.prog), done: S.mission.done ? 1 : 0, act: S.mission.active ? 1 : 0, marks: S.mission.type === 'nests' ? S.enemies.filter(e => e.type === 'ne').map(e => r3(e.p)) : null } : null,
+    qs: S.quests.map(q => ({ id: q.id, npc: q.npc, t: q.title, x: q.text, ty: q.ty, g: q.goal, p: q.prog, r: q.reward, s: q.state })),
     of: S.offers, st: { hp: Math.round(S.station.hp), hm: S.station.hm }, up: S.up,
     dr: S.doors.map(b => b ? 1 : 0), ev: events,
   };
@@ -450,7 +469,7 @@ function handle(p, m) {
       if (p.seat === 'pilot' && sh.docked) {
         if (!S.mission) { send(p.ws, { t: 'toast', m: 'Сначала возьмите миссию в терминале (правое крыло)', c: 'red' }); return; }
         if (S.doors.some(Boolean)) { send(p.ws, { t: 'toast', m: 'Закройте шлюзы перед отстыковкой!', c: 'red' }); return; }
-        for (const o of players.values()) if (Math.abs(o.pos[0]) > 4.25 && Math.abs(o.pos[2] - 8) < 5) { send(p.ws, { t: 'toast', m: 'Напарник ещё на станции!', c: 'red' }); return; }
+        for (const o of players.values()) if ((Math.abs(o.pos[0]) > 4.25 && Math.abs(o.pos[2] - 8) < 5) || o.pos[2] > 12) { send(p.ws, { t: 'toast', m: 'Напарник ещё на станции!', c: 'red' }); return; }
         sh.docked = false; sh.p = DOCK_P.slice(); sh.q = [0, 1, 0, 0]; sh.v = [0, 0, 35];
         activateMission();
       }
@@ -479,6 +498,12 @@ function handle(p, m) {
       if (miss <= 0 && !S.fires.length) return;
       if (S.credits < c) { send(p.ws, { t: 'toast', m: 'Не хватает ◆ на ремонт (' + c + ')', c: 'red' }); return; }
       S.credits -= c; sh.hull = hullMax(); S.fires = []; toast('Корабль отремонтирован', 'green'); ev({ k: 'buy' });
+      break;
+    }
+    case 'quest': {
+      const q = S.quests.find(x => x.id === m.id); if (!q || !sh.docked) return;
+      if (m.a === 'take' && q.state === 'offer') { q.state = 'active'; toast(p.name + ' взял задание «' + q.title + '»', 'blue'); }
+      else if (m.a === 'claim' && q.state === 'done') { q.state = 'claimed'; S.credits += q.reward; toast('Награда от ' + q.npcName + ': +' + q.reward + ' ◆', 'green'); ev({ k: 'buy' }); refreshQuests(); }
       break;
     }
     case 'heal': if (sh.docked) { for (const o of players.values()) if (!o.dead) { o.hp = 100; o.down = false; } toast('Экипаж вылечен', 'green'); } break;
