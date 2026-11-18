@@ -111,6 +111,7 @@ function lead(from, speed) {
 function hurtShip(d) {
   const sh = S.ship;
   if (sh.docked || sh.docking || phase !== 'game') return;
+  if (S.god) { ev({ k: 'hit', d: 0, sh: 1 }); return; }
   sh.lastHit = S.t;
   const s = Math.min(sh.sh, d); sh.sh -= s; d -= s;
   ev({ k: 'hit', d: r1(d + s), sh: s > 0 && d <= 0 ? 1 : 0 });
@@ -122,6 +123,7 @@ function hurtShip(d) {
   }
 }
 function spawnFire(kind) {
+  if (S.god) return;
   const free = FIRE_SLOTS.map((_, i) => i).filter(i => !S.fires.some(f => f.slot === i));
   if (!free.length) return;
   const slot = free[Math.floor(Math.random() * free.length)];
@@ -230,7 +232,7 @@ function updateEnemy(e) {
   if (e.type !== 'ne') e.p = add(e.p, mul(e.v, DT));
 }
 function hurtStation(d) {
-  if (!S.mission || S.mission.type !== 'defend') return;
+  if (!S.mission || S.mission.type !== 'defend' || S.god) return;
   S.station.hp -= d;
   ev({ k: 'shit' });
   if (S.station.hp <= 0) { S.station.hp = 0; gameOver('Станция пала'); }
@@ -320,6 +322,7 @@ function tick() {
     const inShip = Math.abs(p.pos[0]) < 5.2;
     if (inShip && !sh.docked) dmg += Math.min(3, breaches) * 1.3;
     for (const f of S.fires) if (f.kind === 'fire') { const fp = FIRE_SLOTS[f.slot]; if (Math.hypot(p.pos[0] - fp[0], p.pos[2] - fp[2]) < 2.3) dmg += 16; }
+    if (S.god) { dmg = 0; p.hp = 100; }
     if (dmg > 0) { p.hp -= dmg * DT; p.lastDmg = S.t; }
     else if (S.t - p.lastDmg > 5) p.hp = Math.min(100, p.hp + (2 + 3 * S.up.medbay) * DT);
     if (p.hp <= 0) { p.hp = 0; p.down = true; p.seat = null; p.bleed = 35; p.rv = 0; toast(p.name + ' без сознания! Поднимите его (E)', 'red'); }
@@ -395,7 +398,7 @@ function snapshot() {
     ep: S.ep.map(b => [b.id, r1(b.p[0]), r1(b.p[1]), r1(b.p[2]), r1(b.v[0]), r1(b.v[1]), r1(b.v[2]), b.s]),
     lo: S.loot.map(l => [l.id, r1(l.p[0]), r1(l.p[1]), r1(l.p[2])]),
     fi: S.fires.map(f => [f.id, f.slot, f.kind, Math.round(f.hp)]),
-    cr: S.credits, sec: S.sector, kills: S.kills,
+    cr: S.credits, sec: S.sector, kills: S.kills, god: S.god ? 1 : 0,
     mi: S.mission ? { type: S.mission.type, label: S.mission.label, goal: S.mission.goal, prog: Math.floor(S.mission.prog), done: S.mission.done ? 1 : 0, act: S.mission.active ? 1 : 0, marks: S.mission.type === 'nests' ? S.enemies.filter(e => e.type === 'ne').map(e => r3(e.p)) : null } : null,
     qs: S.quests.map(q => ({ id: q.id, npc: q.npc, t: q.title, x: q.text, ty: q.ty, g: q.goal, p: q.prog, r: q.reward, s: q.state })),
     of: S.offers, st: { hp: Math.round(S.station.hp), hm: S.station.hm }, up: S.up,
@@ -498,6 +501,26 @@ function handle(p, m) {
       if (miss <= 0 && !S.fires.length) return;
       if (S.credits < c) { send(p.ws, { t: 'toast', m: 'Не хватает ◆ на ремонт (' + c + ')', c: 'red' }); return; }
       S.credits -= c; sh.hull = hullMax(); S.fires = []; toast('Корабль отремонтирован', 'green'); ev({ k: 'buy' });
+      break;
+    }
+    case 'admin': {
+      if (p !== hostP()) { send(p.ws, { t: 'toast', m: 'Админка доступна только хосту', c: 'red' }); return; }
+      const v = m.v;
+      switch (m.cmd) {
+        case 'credits': S.credits = Math.max(0, S.credits + Math.round(+v || 0)); break;
+        case 'god': S.god = !!v; if (S.god) { S.fires = []; sh.hull = hullMax(); sh.sh = shMax(); for (const o of players.values()) { o.hp = 100; o.down = false; o.dead = false; } } break;
+        case 'repair': sh.hull = hullMax(); sh.sh = shMax(); S.fires = []; break;
+        case 'heal': for (const o of players.values()) { o.hp = 100; o.down = false; o.dead = false; } break;
+        case 'killall': for (const e of S.enemies.slice()) killEnemy(e); S.ep = []; break;
+        case 'upgrades': for (const k in SHOP) S.up[k] = SHOP[k].max; sh.hull = hullMax(); sh.sh = shMax(); break;
+        case 'resetup': for (const k in SHOP) S.up[k] = 0; sh.hull = Math.min(sh.hull, hullMax()); break;
+        case 'sector': S.sector = Math.max(1, Math.min(30, Math.round(+v || 1))); S.offers = makeOffers(S.sector); if (!S.mission || !S.mission.active) S.mission = null; refreshQuests(); ev({ k: 'sector', n: S.sector }); break;
+        case 'spawn': if (!sh.docked && EHP[v]) { const n = v === 'bo' || v === 'ne' ? 1 : 4; for (let i = 0; i < n; i++) spawn(v, add(sh.p, mul(rdir(), v === 'bo' ? 400 : 180))); } else if (sh.docked) send(p.ws, { t: 'toast', m: 'Спавн — только в космосе', c: 'red' }); break;
+        case 'mission': if (S.mission && S.mission.active && !S.mission.done) { if (S.mission.type === 'defend') S.mission.prog = S.mission.goal; missionDone(); } break;
+        case 'quests': for (const q of S.quests) if (q.state === 'active') { q.prog = q.goal; q.state = 'done'; } break;
+        default: return;
+      }
+      toast('[админ] ' + ({ credits: (v > 0 ? '+' : '') + v + ' ◆', god: 'режим бога ' + (v ? 'ВКЛ' : 'ВЫКЛ'), repair: 'корабль починен', heal: 'экипаж вылечен', killall: 'все твари убиты', upgrades: 'все улучшения на максимум', resetup: 'улучшения сброшены', sector: 'сектор ' + S.sector, spawn: 'спавн: ' + v, mission: 'миссия выполнена', quests: 'задания выполнены' }[m.cmd] || m.cmd), 'blue');
       break;
     }
     case 'quest': {

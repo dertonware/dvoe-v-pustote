@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Админка · Двое в Пустоте</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@600;800&family=Rubik:wght@400;500;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<style>
+:root{--bg:#0b0d1a;--panel:#15182b;--panel2:#1e2238;--line:rgba(255,255,255,.08);--text:#f4efe6;--mute:#9a98ae;--orange:#ff8a3d;--orange2:#ffb067;--teal:#5ff6ff;--green:#7dffb0;--red:#ff5a6a;--gold:#ffd05f}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:radial-gradient(ellipse at top,#1d1435 0%,var(--bg) 60%);color:var(--text);font-family:Rubik,system-ui,sans-serif;min-height:100vh;padding:24px 16px 40px}
+.wrap{max-width:980px;margin:0 auto;display:grid;gap:16px}
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+h1{font-family:Unbounded;font-weight:800;font-size:clamp(22px,4vw,32px);background:linear-gradient(180deg,#fff6e6,#ff8a3d);-webkit-background-clip:text;background-clip:text;color:transparent}
+h2{font-family:Unbounded;font-size:14px;letter-spacing:.08em;text-transform:uppercase;color:var(--mute);margin-bottom:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:22px;padding:18px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}
+.conn{display:flex;align-items:center;gap:10px;font-weight:700;font-size:14px;padding:8px 14px;border-radius:999px;background:var(--panel2)}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--red);box-shadow:0 0 10px var(--red)}
+.conn.ok .dot{background:var(--green);box-shadow:0 0 10px var(--green)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}
+.stat{background:var(--panel2);border-radius:14px;padding:10px 12px}
+.stat b{display:block;font-family:Unbounded;font-size:18px;margin-top:4px;color:var(--orange2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stat span{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--mute);font-weight:700}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+button{font-family:Rubik;font-weight:700;font-size:14px;border:none;border-radius:12px;padding:11px 14px;cursor:pointer;background:var(--panel2);color:var(--text);box-shadow:0 3px 0 rgba(0,0,0,.45);transition:transform .1s,filter .1s}
+button:hover{filter:brightness(1.2)} button:active{transform:translateY(2px);box-shadow:0 1px 0 rgba(0,0,0,.45)}
+button.o{background:linear-gradient(180deg,var(--orange2),var(--orange));color:#2a1404;box-shadow:0 3px 0 #a8461a}
+button.t{background:linear-gradient(180deg,#a8fbff,var(--teal));color:#05282c;box-shadow:0 3px 0 #1f8e98}
+button.r{background:linear-gradient(180deg,#ff9fb0,var(--red));color:#2a0408;box-shadow:0 3px 0 #9a2a36}
+button:disabled{opacity:.4;cursor:not-allowed}
+input{font-family:Unbounded;font-size:14px;background:#0b0d1a;color:var(--text);border:1px solid var(--line);border-radius:12px;padding:10px 12px;width:130px;outline:none}
+input:focus{border-color:var(--orange)}
+.god{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.switch{position:relative;width:74px;height:40px;border-radius:999px;background:#2a2d40;cursor:pointer;transition:background .2s;flex:none}
+.switch::after{content:"";position:absolute;left:5px;top:5px;width:30px;height:30px;border-radius:50%;background:#fff;transition:left .2s}
+.switch.on{background:var(--gold);box-shadow:0 0 18px rgba(255,208,95,.5)} .switch.on::after{left:39px}
+.hint{color:var(--mute);font-size:13px;line-height:1.5}
+.log{font-family:ui-monospace,Consolas,monospace;font-size:12px;color:var(--mute);max-height:140px;overflow:auto;display:grid;gap:4px}
+.log .ok{color:var(--green)} .log .err{color:var(--red)}
+.warn{background:rgba(255,90,106,.12);border:1px solid rgba(255,90,106,.35);border-radius:14px;padding:12px 14px;font-size:14px;display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Админка · Двое в Пустоте</h1>
+    <div class="conn" id="conn"><span class="dot"></span><span id="connT">Ищу вкладку с игрой…</span></div>
+  </header>
+  <div class="warn" id="warn"></div>
+
+  <section class="card">
+    <h2>Состояние</h2>
+    <div class="stats">
+      <div class="stat"><span>Фаза</span><b id="sPhase">—</b></div>
+      <div class="stat"><span>Кристаллы ◆</span><b id="sCr">—</b></div>
+      <div class="stat"><span>Сектор</span><b id="sSec">—</b></div>
+      <div class="stat"><span>Корпус</span><b id="sHull">—</b></div>
+      <div class="stat"><span>Твари рядом</span><b id="sEn">—</b></div>
+      <div class="stat"><span>Миссия</span><b id="sMi">—</b></div>
+    </div>
+  </section>
+
+  <div class="grid">
+    <section class="card">
+      <h2>Режим бога</h2>
+      <div class="god"><div class="hint">Корабль и экипаж не получают урона, пожаров и пробоин не бывает.</div><div class="switch" id="god" role="switch" aria-checked="false" tabindex="0"></div></div>
+    </section>
+
+    <section class="card">
+      <h2>Деньги</h2>
+      <div class="row" style="margin-bottom:10px">
+        <button class="o" data-cr="100">+100 ◆</button><button class="o" data-cr="1000">+1 000 ◆</button><button class="o" data-cr="10000">+10 000 ◆</button><button class="r" data-cr="-1000">−1 000 ◆</button>
+      </div>
+      <div class="row"><input id="crIn" type="number" value="5000" step="100"><button class="o" id="crAdd">Добавить</button></div>
+    </section>
+
+    <section class="card">
+      <h2>Корабль и экипаж</h2>
+      <div class="row">
+        <button class="t" data-c="repair">Починить корабль</button><button class="t" data-c="heal">Вылечить / воскресить</button>
+        <button class="o" data-c="upgrades">Все улучшения МАКС</button><button data-c="resetup">Сбросить улучшения</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Бой и прогресс</h2>
+      <div class="row" style="margin-bottom:10px"><button class="r" data-c="killall">Убить всех тварей</button><button class="t" data-c="mission">Выполнить миссию</button><button class="t" data-c="quests">Выполнить задания NPC</button></div>
+      <div class="row" style="margin-bottom:10px"><span class="hint" style="width:100%">Спавн рядом с кораблём (только в космосе):</span>
+        <button data-sp="sw">Глаза ×4</button><button data-sp="je">Медузы ×4</button><button data-sp="wo">Черви ×4</button><button data-sp="ne">Гнездо</button><button class="r" data-sp="bo">Матка</button></div>
+      <div class="row"><span class="hint">Сектор:</span><input id="secIn" type="number" min="1" max="30" value="3"><button id="secGo">Перейти</button></div>
+    </section>
+  </div>
+
+  <section class="card">
+    <h2>Журнал</h2>
+    <div class="log" id="log"></div>
+    <p class="hint" style="margin-top:12px">Как пользоваться: открой игру в соседней вкладке этого же браузера и зайди в неё хостом (кто первым вошёл в лобби). Команды выполняет только хост. Друг ничего не видит, кроме сообщения «[админ] …» в игре.</p>
+  </section>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const ch = 'BroadcastChannel' in window ? new BroadcastChannel('dvp-admin') : null;
+let host = null, lastSeen = 0, anyTab = 0, guestOnly = false;
+const log = (m, cls) => { const d = document.createElement('div'); d.className = cls || ''; d.textContent = new Date().toLocaleTimeString() + '  ' + m; $('log').prepend(d); while ($('log').children.length > 60) $('log').lastChild.remove(); };
+function cmd(c, v) {
+  if (!ch) return log('Браузер не поддерживает BroadcastChannel', 'err');
+  if (!host) return log('Нет вкладки хоста с игрой', 'err');
+  if (host.phase !== 'game') return log('Игра не запущена — нажми «Старт» в лобби', 'err');
+  ch.postMessage({ t: 'cmd', cmd: c, v });
+}
+if (ch) {
+  ch.onmessage = e => {
+    const m = e.data || {};
+    if (m.t === 'state') { anyTab = Date.now(); if (m.host) { host = m; lastSeen = Date.now(); render(); } else guestOnly = true; }
+    if (m.t === 'ack') log(m.msg, m.ok ? 'ok' : 'err');
+  };
+  ch.postMessage({ t: 'ping' });
+} else log('Браузер не поддерживает BroadcastChannel', 'err');
+function render() {
+  const s = host; if (!s) return;
+  $('sPhase').textContent = { menu: 'меню', game: s.docked ? 'игра · станция' : 'игра · космос', over: 'конец' }[s.phase] || s.phase;
+  $('sCr').textContent = s.cr ?? '—'; $('sSec').textContent = s.sec ?? '—';
+  $('sHull').textContent = s.hull != null ? s.hull + ' / ' + s.hm : '—'; $('sEn').textContent = s.en ?? '—'; $('sMi').textContent = s.mi || '—';
+  $('god').classList.toggle('on', !!s.god); $('god').setAttribute('aria-checked', s.god ? 'true' : 'false');
+}
+setInterval(() => {
+  const ok = host && Date.now() - lastSeen < 2000;
+  $('conn').classList.toggle('ok', !!ok);
+  $('connT').textContent = ok ? 'Хост: ' + (host.name || '—') + (host.room ? ' · комната ' + host.room : '') : (Date.now() - anyTab < 2000 ? 'Вкладка открыта, но ты не хост' : 'Вкладка с игрой не найдена');
+  const w = $('warn');
+  if (!ok) { w.style.display = 'block'; w.innerHTML = Date.now() - anyTab < 2000 ? 'Игра открыта, но эта вкладка не хост. Админка работает только у того, кто первым зашёл в лобби.' : 'Открой игру в соседней вкладке <b>этого же браузера</b> (тот же адрес сайта, что и у админки). Админка найдёт её сама.'; }
+  else w.style.display = host.phase === 'game' ? 'none' : 'block', w.innerHTML = host.phase === 'game' ? '' : 'Игра в меню/лобби. Команды заработают после «Старт».';
+  if (ch) ch.postMessage({ t: 'ping' });
+}, 700);
+$('god').onclick = () => cmd('god', !(host && host.god));
+$('god').onkeydown = e => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); $('god').click(); } };
+document.querySelectorAll('[data-cr]').forEach(b => b.onclick = () => cmd('credits', +b.dataset.cr));
+$('crAdd').onclick = () => cmd('credits', +$('crIn').value || 0);
+document.querySelectorAll('[data-c]').forEach(b => b.onclick = () => cmd(b.dataset.c));
+document.querySelectorAll('[data-sp]').forEach(b => b.onclick = () => cmd('spawn', b.dataset.sp));
+$('secGo').onclick = () => cmd('sector', +$('secIn').value || 1);
+</script>
+</body>
+</html>
