@@ -1135,6 +1135,30 @@ function gameFrame(dt, t) {
 
 // ---------- старт ----------
 window.__g = { me, PS, send, SH, keys, stick, mouse, ENT, tick: (n = 1, dt = 0.05) => { for (let i = 0; i < n; i++) { if (phase === "game") gameFrame(dt, now()); } fx.update(dt); fxN.update(dt); fxS.update(dt); fxSN.update(dt); composer.render(dt); } };
+// ---------- мост к админке (admin.html в соседней вкладке того же браузера) ----------
+const adminCh = 'BroadcastChannel' in window ? new BroadcastChannel('dvp-admin') : null;
+const godBadge = document.createElement('div');
+godBadge.textContent = 'РЕЖИМ БОГА'; godBadge.style.cssText = 'position:fixed;left:50%;bottom:92px;transform:translateX(-50%);z-index:9;font:900 13px Unbounded,sans-serif;letter-spacing:.2em;color:#ffd05f;background:rgba(40,30,0,.7);border:1px solid #ffd05f;border-radius:12px;padding:6px 14px;display:none;pointer-events:none';
+document.body.appendChild(godBadge);
+function adminState() {
+  return { t: 'state', phase, host: amHost(), net: NET, name: myName, room: roomCode,
+    cr: snap ? snap.cr : null, sec: snap ? snap.sec : null, god: snap ? !!snap.god : false, docked,
+    hull: snap ? Math.round(snap.ship.hull) : null, hm: snap ? snap.ship.hm : null, en: snap ? snap.en.length : 0,
+    mi: snap && snap.mi ? snap.mi.label + (snap.mi.done ? ' ✓' : snap.mi.act ? ' (' + snap.mi.prog + '/' + snap.mi.goal + ')' : '') : null };
+}
+if (adminCh) {
+  adminCh.onmessage = e => {
+    const m = e.data || {};
+    if (m.t === 'ping') return adminCh.postMessage(adminState());
+    if (m.t !== 'cmd') return;
+    if (!amHost()) return; // командует только вкладка хоста (вкладка друга молчит)
+    if (phase !== 'game') return adminCh.postMessage({ t: 'ack', ok: false, msg: 'Игра не запущена — нажми «Старт» в лобби' });
+    send({ t: 'admin', cmd: m.cmd, v: m.v });
+    adminCh.postMessage({ t: 'ack', ok: true, msg: 'Отправлено: ' + m.cmd });
+  };
+  setInterval(() => { try { adminCh.postMessage(adminState()); } catch { } godBadge.style.display = phase === 'game' && snap && snap.god ? 'block' : 'none'; }, 500);
+}
+
 // прогрев: всё, что может появиться в бою, компилируется сейчас, а не посреди перестрелки (иначе фризы)
 function prewarm() {
   const tmp = [], base = camera.getWorldPosition(V3()).add(V3(0, 0, -60));
