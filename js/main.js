@@ -1141,7 +1141,7 @@ const godBadge = document.createElement('div');
 godBadge.textContent = 'РЕЖИМ БОГА'; godBadge.style.cssText = 'position:fixed;left:50%;bottom:92px;transform:translateX(-50%);z-index:9;font:900 13px Unbounded,sans-serif;letter-spacing:.2em;color:#ffd05f;background:rgba(40,30,0,.7);border:1px solid #ffd05f;border-radius:12px;padding:6px 14px;display:none;pointer-events:none';
 document.body.appendChild(godBadge);
 function adminState() {
-  return { t: 'state', phase, host: amHost(), net: NET, name: myName, room: roomCode,
+  return { t: 'state', phase, host: amHost() || p2pRole === 'host' || (NET === 'ws' && !lobby), net: NET, name: myName, room: roomCode,
     cr: snap ? snap.cr : null, sec: snap ? snap.sec : null, god: snap ? !!snap.god : false, docked,
     hull: snap ? Math.round(snap.ship.hull) : null, hm: snap ? snap.ship.hm : null, en: snap ? snap.en.length : 0,
     mi: snap && snap.mi ? snap.mi.label + (snap.mi.done ? ' ✓' : snap.mi.act ? ' (' + snap.mi.prog + '/' + snap.mi.goal + ')' : '') : null };
