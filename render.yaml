@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: dvoe-v-pustote
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: HOSTED
+        value: "1"
