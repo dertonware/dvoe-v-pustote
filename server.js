@@ -15,6 +15,7 @@ const zlib = require('zlib');
 const gzCache = new Map();
 const server = http.createServer((req, res) => {
   let u; try { u = decodeURIComponent(req.url.split('?')[0]); } catch { res.writeHead(400); return res.end(); }
+  if (u === '/__dvp') { res.writeHead(200, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); return res.end('node'); }
   let base = PUB, rel = u;
   const isLib = u.startsWith('/three/');
   if (isLib) { base = THREE_DIR; rel = u.slice(6); }
