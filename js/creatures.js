@@ -2,16 +2,36 @@
 import * as THREE from 'three';
 
 const std = (c, o = {}) => new THREE.MeshStandardMaterial(Object.assign({ color: c, roughness: 0.55, metalness: 0 }, o));
+// кожа: пятна и прожилки (цвет + рельеф)
+const skinTex = (() => {
+  const mk = bump => { const c = document.createElement('canvas'); c.width = c.height = 256; const x = c.getContext('2d');
+    x.fillStyle = bump ? '#808080' : '#ffffff'; x.fillRect(0, 0, 256, 256);
+    for (let i = 0; i < 70; i++) { const r = 4 + Math.random() * 18; x.fillStyle = bump ? `rgba(40,40,40,${0.2 + Math.random() * 0.3})` : `rgba(150,90,140,${0.08 + Math.random() * 0.18})`; x.beginPath(); x.ellipse(Math.random() * 256, Math.random() * 256, r, r * (0.5 + Math.random() * 0.6), Math.random() * 3, 0, 7); x.fill(); }
+    x.lineWidth = 2; x.strokeStyle = bump ? 'rgba(220,220,220,.7)' : 'rgba(120,40,110,.35)';
+    for (let i = 0; i < 14; i++) { x.beginPath(); let px = Math.random() * 256, py = Math.random() * 256; x.moveTo(px, py); for (let k = 0; k < 8; k++) { px += (Math.random() - 0.5) * 50; py += (Math.random() - 0.5) * 50; x.lineTo(px, py); } x.stroke(); }
+    const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; if (!bump) t.colorSpace = THREE.SRGBColorSpace; return t; };
+  return { map: mk(false), bump: mk(true) };
+})();
+// слизистая кожа: лак сверху, бархатный отлив, светящийся контур по краю силуэта
+function slime(color, rim = 0x7dffb0, o = {}) {
+  const m = new THREE.MeshPhysicalMaterial(Object.assign({ color, map: skinTex.map, bumpMap: skinTex.bump, bumpScale: 2, roughness: 0.42, clearcoat: 1, clearcoatRoughness: 0.18, sheen: 0.8, sheenColor: new THREE.Color(rim).multiplyScalar(0.6), sheenRoughness: 0.4 }, o));
+  m.onBeforeCompile = sh => {
+    sh.uniforms.uRim = { value: new THREE.Color(rim) };
+    sh.fragmentShader = 'uniform vec3 uRim;\n' + sh.fragmentShader.replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\nfloat rimF = pow(1.0 - abs(dot(normalize(vNormal), normalize(vViewPosition))), 3.0);\ntotalEmissiveRadiance += uRim * rimF * 1.1;');
+  };
+  return m;
+}
 const M = {
-  skin: std(0xd9a6c9), skin2: std(0xb98ad8), skinW: std(0xe7c3a8), skinN: std(0x7d5a7a, { roughness: 0.8 }),
-  belly: std(0xf3d9e6), eye: std(0xfbf8f2, { roughness: 0.25 }), pupil: std(0x0b0b10, { roughness: 0.2 }),
+  skin: slime(0xd9a6c9), skin2: slime(0xb98ad8, 0xff6fb5), skinW: slime(0xe7c3a8, 0xffb067), skinN: slime(0x7d5a7a, 0x7dffb0, { roughness: 0.7 }),
+  belly: slime(0xf3d9e6, 0xffffff), eye: new THREE.MeshPhysicalMaterial({ color: 0xfbf8f2, roughness: 0.15, clearcoat: 1, clearcoatRoughness: 0.05 }), pupil: new THREE.MeshPhysicalMaterial({ color: 0x0b0b10, roughness: 0.1, clearcoat: 1 }),
+  flash: new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }),
   iris: new THREE.MeshStandardMaterial({ color: 0x5ff6ff, emissive: 0x5ff6ff, emissiveIntensity: 2.2 }),
   irisR: new THREE.MeshStandardMaterial({ color: 0xff3b4f, emissive: 0xff3b4f, emissiveIntensity: 2.6 }),
   mouth: std(0x3a0712, { roughness: 0.9 }), tooth: std(0xfff4e0, { roughness: 0.3 }),
   core: new THREE.MeshStandardMaterial({ color: 0xff6fb5, emissive: 0xff4fa0, emissiveIntensity: 2.8, transparent: true, opacity: 0.95 }),
   coreG: new THREE.MeshStandardMaterial({ color: 0x7dffb0, emissive: 0x7dffb0, emissiveIntensity: 2.4 }),
-  bell: new THREE.MeshStandardMaterial({ color: 0xe9b6dd, roughness: 0.3, transparent: true, opacity: 0.82, side: THREE.DoubleSide }),
-  bellBoss: new THREE.MeshStandardMaterial({ color: 0x9a6ad0, roughness: 0.35, transparent: true, opacity: 0.88, side: THREE.DoubleSide }),
+  bell: new THREE.MeshPhysicalMaterial({ color: 0xe9b6dd, roughness: 0.15, transparent: true, opacity: 0.78, side: THREE.DoubleSide, iridescence: 1, iridescenceIOR: 1.6, clearcoat: 1, sheen: 1, sheenColor: 0xff9fd8, emissive: 0x401030, emissiveIntensity: 0.6 }),
+  bellBoss: new THREE.MeshPhysicalMaterial({ color: 0x9a6ad0, roughness: 0.2, transparent: true, opacity: 0.86, side: THREE.DoubleSide, iridescence: 1, iridescenceIOR: 1.5, clearcoat: 1, sheen: 1, sheenColor: 0xc08aff, emissive: 0x200a40, emissiveIntensity: 0.8 }),
 };
 const G = { s: new THREE.SphereGeometry(1, 20, 14), sLo: new THREE.SphereGeometry(1, 12, 8), cone: new THREE.ConeGeometry(1, 1, 10) };
 function ball(parent, r, mat, x = 0, y = 0, z = 0, lo) { const m = new THREE.Mesh(lo ? G.sLo : G.s, mat); m.scale.setScalar(r); m.position.set(x, y, z); parent.add(m); return m; }
@@ -96,7 +116,20 @@ const _tgt = new THREE.Vector3();
 export function animateCreature(o, dt, vel, shipPos, state) {
   o.t += dt; const t = o.t;
   o.pop = Math.max(0, o.pop - dt * 6);
-  const sc = 1 + o.pop * 0.18; o.body.scale.setScalar(sc);
+  // появление из ниоткуда + упругий «пружинный» отклик на попадание
+  o.born = Math.min(1, (o.born || 0) + dt * 1.6);
+  const bornK = 1 - Math.pow(1 - o.born, 3) + Math.sin(o.born * Math.PI) * 0.15;
+  const sc = (1 + o.pop * 0.18 * Math.cos(o.pop * 9)) * bornK;
+  // сжатие-растяжение по скорости
+  const sp = vel.length(), st = Math.min(0.25, sp / 600);
+  o.body.scale.set(sc * (1 - st * 0.5), sc * (1 - st * 0.5), sc * (1 + st));
+  // белая вспышка при попадании
+  o.flash = Math.max(0, (o.flash || 0) - dt * 14);
+  const fl = o.flash > 0.35;
+  if (fl !== o.flashing) {
+    o.flashing = fl;
+    o.group.traverse(m => { if (!m.isMesh) return; if (fl) { m.userData.m0 = m.material; m.material = M.flash; } else if (m.userData.m0) m.material = m.userData.m0; });
+  }
   for (const e of o.eyes) lookEye(e, shipPos);
   switch (o.type) {
     case 'sw':

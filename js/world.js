@@ -1,17 +1,24 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { hullTextures, panelTextures, floorTextures } from './fx.js';
 
 // ---------- общие материалы ----------
 const std = (color, o = {}) => new THREE.MeshStandardMaterial(Object.assign({ color, roughness: 0.72, metalness: 0.04 }, o));
 const glow = (color, k = 2.5) => new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: k, roughness: 0.4 });
+const HT = hullTextures(), WT = panelTextures('#6e7590'), WTL = panelTextures('#9aa1b8'), CT = panelTextures('#585e74'), FT = floorTextures();
+// окрашенный металл: лак поверх краски, швы панелей и заклёпки через рельеф
+const paint = (color, t, o = {}) => new THREE.MeshPhysicalMaterial(Object.assign({ color, map: t && t.map, bumpMap: t && t.bump, bumpScale: 1.2, roughness: 0.48, metalness: 0.15, clearcoat: 0.55, clearcoatRoughness: 0.32 }, o));
 export const MAT = {
-  hull: std(0xeee2cf, { roughness: 0.55 }), hullO: std(0xff7a3d, { roughness: 0.5 }), hullD: std(0x3b3f52),
-  wall: std(0x6e7590), wallL: std(0x9aa1b8), floor: std(0x2c303d, { roughness: 0.9 }), ceil: std(0x585e74),
-  seat: std(0xff8a3d, { roughness: 0.6 }), dark: std(0x1c1f2b), metal: std(0xb8bccb, { metalness: 0.5, roughness: 0.35 }),
+  hull: paint(0xffffff, HT), hullO: paint(0xff7a3d, null, { roughness: 0.42 }), hullD: std(0x3b3f52, { metalness: 0.45, roughness: 0.4 }),
+  wall: std(0xffffff, { map: WT.map, bumpMap: WT.bump, bumpScale: 1.5 }), wallL: std(0xffffff, { map: WTL.map, bumpMap: WTL.bump, bumpScale: 1.5 }),
+  floor: std(0xffffff, { map: FT.map, bumpMap: FT.bump, bumpScale: 2, roughness: 0.75, metalness: 0.35 }), ceil: std(0xffffff, { map: CT.map, bumpMap: CT.bump, bumpScale: 1.2 }),
+  seat: new THREE.MeshPhysicalMaterial({ color: 0xff8a3d, roughness: 0.75, sheen: 1, sheenColor: 0xffc49a, sheenRoughness: 0.5 }), dark: std(0x1c1f2b, { metalness: 0.3, roughness: 0.5 }),
+  metal: std(0xc8ccd8, { metalness: 0.9, roughness: 0.28 }),
   teal: glow(0x5ff6ff, 1.25), orange: glow(0xff8a3d, 1.5), red: glow(0xff3b4f, 2.5), green: glow(0x7dffb0, 2.2), yellow: glow(0xffd05f, 2.4),
-  glass: new THREE.MeshPhysicalMaterial({ color: 0xbff4ff, transparent: true, opacity: 0.13, roughness: 0.05, metalness: 0, side: THREE.DoubleSide, depthWrite: false }),
+  glass: new THREE.MeshPhysicalMaterial({ color: 0xcff6ff, transparent: true, opacity: 0.16, roughness: 0.02, metalness: 0.1, iridescence: 0.6, iridescenceIOR: 1.4, side: THREE.DoubleSide, depthWrite: false, envMapIntensity: 1.6 }),
   rock: std(0x8a7f78, { roughness: 0.95 }), stripe: std(0xffd05f),
 };
+const V = (x, y, z) => new THREE.Vector3(x, y, z);
 const gcache = {};
 function rgeo(w, h, d, r) {
   r = Math.min(r, w / 2 - 0.001, h / 2 - 0.001, d / 2 - 0.001);
@@ -118,6 +125,16 @@ export function buildShip() {
   rbox(I, 0.9, 0.25, 0.85, 0.12, MAT.seat, 0, 0.5, -7.6); rbox(I, 0.9, 1.05, 0.22, 0.12, MAT.seat, 0, 1.0, -7.15);
   cyl(I, 0.12, 0.18, 0.45, MAT.hullD, 0, 0.22, -7.6); rbox(I, 0.18, 0.5, 0.18, 0.06, MAT.hullD, 0.38, 0.75, -8.05);
   const stickTop = sph(I, 0.08, MAT.orange, 0.38, 1.02, -8.05, 10);
+  // рычаг тяги слева от пилота
+  rbox(I, 0.22, 0.35, 0.5, 0.06, MAT.hullD, -0.42, 0.62, -7.9);
+  const throttle = new THREE.Group(); throttle.position.set(-0.42, 0.8, -7.9); I.add(throttle);
+  cyl(throttle, 0.025, 0.025, 0.32, MAT.metal, 0, 0.16, 0); rbox(throttle, 0.12, 0.08, 0.1, 0.03, MAT.seat, 0, 0.34, 0);
+  // кабели и боковые пульты кабины
+  for (const sx of [-1, 1]) {
+    const pnl = rbox(I, 0.5, 0.35, 1.6, 0.1, MAT.hullD, sx * 1.75, 0.55, -7.4); pnl.rotation.z = sx * 0.4;
+    for (let k = 0; k < 3; k++) rbox(I, 0.08, 0.04, 0.3, 0.015, k === 1 ? MAT.teal : MAT.orange, sx * 1.62, 0.78, -7.9 + k * 0.45).rotation.z = sx * 0.4;
+    const cable = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3([V(sx * 2.0, 2.6, -4.6), V(sx * 1.6, 2.2, -5.5), V(sx * 1.9, 1.2, -6.2), V(sx * 1.6, 0.3, -6.8)]), 24, 0.04, 8), MAT.dark); I.add(cable);
+  }
 
   // Коридор A
   room(I, -1.1, 1.1, -5, -1.5, { n: [[-1.1, 1.1]], s: [[-1.1, 1.1]] }, { strip, skip: [] });
@@ -235,7 +252,13 @@ export function buildShip() {
   }
   halls.visible = false;
 
-  return { group: ship, inner, hull, holo, holoCone, reactor, lights, alarm, flames, turretGuns, outerDoors, halls, stickTop };
+  // проблесковые огни на корпусе
+  const strobes = [];
+  for (const [x, y, z, c] of [[-8.6, -1.15, 7.2, 0xff3b4f], [8.6, -1.15, 7.2, 0x7dffb0], [0, 5.05, 9.4, 0xffffff], [0, -0.9, -9.8, 0xffffff]]) {
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({ color: c, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, transparent: true }));
+    s.position.set(x, y, z); s.scale.setScalar(2.2); hull.add(s); strobes.push(s);
+  }
+  return { group: ship, inner, hull, holo, holoCone, reactor, lights, alarm, flames, turretGuns, outerDoors, halls, stickTop, throttle, strobes };
 }
 
 // ---------- СТАНЦИЯ ----------
@@ -255,7 +278,7 @@ export function buildStation() {
   for (const sx of [-1, 1]) { rbox(g, 4, 4, 170, 1.5, m2, sx * 10, -5.5, 137); for (let z = 70; z < 215; z += 20) sph(g, 1, MAT.yellow, sx * 10, -3.1, z, 8); }
   const cradles = new THREE.Group(); g.add(cradles);
   for (const sx of [-1, 1]) { rbox(cradles, 11.2, 4.4, 11, 1.6, m1, sx * 10.05, 1.4, 222); rbox(cradles, 11.4, 0.6, 11.2, 0.25, mo, sx * 10.05, 3.2, 222); }
-  const dockRing = new THREE.Mesh(new THREE.TorusGeometry(18, 1.1, 10, 48), MAT.yellow); dockRing.position.copy(DOCK_APPROACH); g.add(dockRing);
+  const dockRing = new THREE.Mesh(new THREE.TorusGeometry(18, 0.7, 10, 48), new THREE.MeshStandardMaterial({ color: 0xffd05f, emissive: 0xffb030, emissiveIntensity: 0.9, roughness: 0.4 })); dockRing.position.copy(DOCK_APPROACH); g.add(dockRing);
   const name = textSprite('СТАНЦИЯ «УЛЕЙ-7»', '#ffd05f', 60); name.position.set(0, 120, 0); g.add(name);
   return { group: g, ring, cradles, dockRing };
 }
