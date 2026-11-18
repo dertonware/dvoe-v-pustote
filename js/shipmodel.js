@@ -42,19 +42,19 @@ export function buildHullModel(hull, MAT, hullTex) {
   belt.scale(1, SY * 0.18, 1); belt.translate(0, CY - 0.15, 0);
   mesh(hull, belt, orange);
   // подбородок под кабиной + сенсорный купол
-  const chin = mesh(hull, new THREE.SphereGeometry(1, 40, 24), paint, 0, 0.15, -7.5); chin.scale.set(3.0, 1.18, 4.3);
-  const sensor = mesh(hull, new THREE.SphereGeometry(0.55, 24, 16), new THREE.MeshPhysicalMaterial({ color: 0x0a0f1c, roughness: 0.05, metalness: 0.3, clearcoat: 1, iridescence: 1 }), 0, -0.25, -11.65);
-  sensor.scale.set(1, 0.8, 1);
+  const noseG = lathe([[0, -13.6], [0.45, -13.45], [1.15, -12.8], [1.85, -11.6], [2.45, -10.1], [2.85, -8.4], [3.02, -6.6], [3.0, -5.0], [2.6, -3.8], [0, -3.6]], 56);
+  noseG.scale(1, 0.46, 1); noseG.translate(0, 0.12, 0);
+  mesh(hull, noseG, paint);
+  const noseStripe = lathe([[1.9, -11.5], [1.98, -11.3], [2.1, -10.9], [2.02, -10.7]], 56); noseStripe.scale(1, 0.47, 1); noseStripe.translate(0, 0.12, 0); mesh(hull, noseStripe, orange);
+  const sensor = mesh(hull, new THREE.SphereGeometry(0.42, 24, 16), new THREE.MeshPhysicalMaterial({ color: 0x0a0f1c, roughness: 0.05, metalness: 0.3, clearcoat: 1, iridescence: 1 }), 0, 0.02, -13.25);
+  sensor.scale.set(1, 0.7, 1);
   for (const sx of [-1, 1]) { // воздухозаборники на подбородке
-    const intake = mesh(hull, rb(0.5, 0.35, 1.8, 0.15), vent, sx * 1.9, -0.45, -8.6); intake.rotation.y = sx * 0.25;
-    for (let k = 0; k < 4; k++) mesh(hull, rb(0.04, 0.3, 1.5, 0.015), dark, sx * (1.8 + k * 0.07), -0.44, -8.6).rotation.y = sx * 0.25;
+    const intake = mesh(hull, rb(0.5, 0.35, 1.8, 0.15), vent, sx * 2.15, -0.55, -8.2); intake.rotation.y = sx * 0.25;
+    for (let k = 0; k < 4; k++) mesh(hull, rb(0.04, 0.3, 1.5, 0.015), dark, sx * (2.05 + k * 0.07), -0.54, -8.2).rotation.y = sx * 0.25;
   }
-  // ободок фонаря кабины
-  const rim = mesh(hull, new THREE.TorusGeometry(1, 0.06, 10, 64), dark, 0, 0.95, -6.6); rim.scale.set(2.36, 3.11, 1); rim.rotation.x = Math.PI / 2;
-  for (const a of [-0.55, 0, 0.55]) { // рёбра фонаря
-    const rib = mesh(hull, new THREE.TorusGeometry(1, 0.045, 8, 48, Math.PI), dark, 0, 0.95, -6.6);
-    rib.scale.set(2.36 * Math.cos(a) + 0.02, 2.27, 3.12); rib.rotation.set(0, Math.PI / 2, 0); rib.rotateX(a);
-  }
+  // ободок фонаря кабины (купол z -9.4..-5.0)
+  const rim = mesh(hull, new THREE.TorusGeometry(1, 0.07, 10, 64), dark, 0, 0.95, -7.2); rim.scale.set(2.37, 2.21, 1); rim.rotation.x = Math.PI / 2;
+  const brow = mesh(hull, rb(4.6, 0.3, 0.5, 0.12), paint, 0, 3.05, -5.05);
 
   // ---- хребет с радиаторами ----
   const spine = mesh(hull, new THREE.CapsuleGeometry(0.75, 9, 8, 20), paint, 0, CY + 4.32 * SY - 0.15, 4.2); spine.rotation.x = Math.PI / 2; spine.scale.set(0.8, 1, 0.55);
@@ -154,7 +154,7 @@ export function buildHullModel(hull, MAT, hullTex) {
 
   // проблесковые огни
   const strobes = [];
-  for (const [x, y, z, c] of [[-10.95, -1.6, 7.5, 0xff3b4f], [10.95, -1.6, 7.5, 0x7dffb0], [0.6, CY + 4.32 * SY + 2.45, 9.3, 0xffffff], [0, -1.15, -10.6, 0xffffff], [0, CY, 12.6, 0xffffff]]) {
+  for (const [x, y, z, c] of [[-10.95, -1.6, 7.5, 0xff3b4f], [10.95, -1.6, 7.5, 0x7dffb0], [0.6, CY + 4.32 * SY + 2.45, 9.3, 0xffffff], [0, -0.3, -13.0, 0xffffff], [0, CY, 12.6, 0xffffff]]) {
     const s = new THREE.Sprite(new THREE.SpriteMaterial({ color: c, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, transparent: true }));
     s.position.set(x, y, z); s.scale.setScalar(2.4); hull.add(s); strobes.push(s);
   }

@@ -5,7 +5,8 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { FinalShader, makeSky, makeSpaceEnvFrom, SunFlare, SUN_DIR, makePlume, Debris, Flashes, DmgNumbers } from './fx.js';
-import { buildShip, buildStation, buildSpace, Particles, makeAvatar, makeViewModel, WALK, WALK_DOCK, OBST, SEATS, TERMINALS, FIRE_SLOTS, DOCK_P, DOCK_APPROACH } from './world.js';
+import { buildShip, buildStation, buildSpace, Particles, makeAvatar, WALK, WALK_HALLS, WALK_DOOR, OBST, SEATS, TERMINALS, FIRE_SLOTS, DOCK_P, DOCK_APPROACH } from './world.js';
+import { makeViewModel } from './props.js';
 import { makeCreature, animateCreature, CREATURE_COLORS, CREATURE_RAD } from './creatures.js';
 import { initAudio, sfx, setVolume, setEngine, setHiss, setIntensity } from './audio.js';
 import { icon, fillIcons } from './icons.js';
@@ -58,7 +59,7 @@ const space = buildSpace(scene, renderer);
 const station = buildStation(); scene.add(station.group);
 const SH = buildShip(); scene.add(SH.group); SH.group.position.copy(DOCK_P);
 SH.group.add(camera);
-const vm = makeViewModel(); camera.add(vm.group); vm.group.children.forEach(c => { c.scale.setScalar(0.7); c.position.multiplyScalar(0.95); });
+const vm = makeViewModel(); camera.add(vm.group);
 const fx = new Particles(scene, 5000, true), fxN = new Particles(scene, 1500, false);
 const fxS = new Particles(SH.inner, 1500, true), fxSN = new Particles(SH.inner, 1200, false);
 const debris = new Debris(scene), flashes = new Flashes(scene), dmgNums = new DmgNumbers();
@@ -250,7 +251,16 @@ $('helpBack').onclick = () => { show(helpBack); };
 $('setBack').onclick = () => { show(settingsBack); };
 $('lBack').onclick = () => { if (amReady()) send({ t: 'ready', v: false }); show('sMenu'); };
 $('lReady').onclick = () => send({ t: 'ready', v: !amReady() });
-$('lStart').onclick = () => { if (!amReady()) send({ t: 'ready', v: true }); setTimeout(() => send({ t: 'start' }), 120); };
+$('lStart').onclick = () => { if (!amHost()) return toast('Запускает только хост', 'red'); if (!allReady()) return toast('Не все нажали «Готов»', 'red'); send({ t: 'start' }); };
+const amHost = () => !!(lobby && lobby.hostId === myId);
+const allReady = () => !!(lobby && lobby.players.length && lobby.players.every(p => p.r));
+function updateStartBtn() {
+  const b = $('lStart'); if (!lobby) return;
+  b.style.display = amHost() ? '' : 'none';
+  b.disabled = !allReady();
+  const host = lobby.players.find(p => p.host);
+  $('lWait').textContent = amHost() ? (allReady() ? 'Все готовы — жми «Старт»' : 'Ждём, пока все нажмут «Готов»') : 'Игру запускает хост' + (host ? ' — ' + host.n : '');
+}
 $('copyBtn').onclick = () => {
   const u = $('invUrl').textContent;
   (navigator.clipboard ? navigator.clipboard.writeText(u) : Promise.reject()).then(() => toast('Ссылка скопирована — кидай другу', 'green')).catch(() => { const r = document.createRange(); r.selectNode($('invUrl')); getSelection().removeAllRanges(); getSelection().addRange(r); toast('Выделил — нажми Ctrl+C', ''); });
@@ -267,6 +277,7 @@ function renderLobby() {
       : `<div class="ico" style="width:74px;height:74px;border-radius:24px">${icon('link')}</div><div class="nm" style="color:var(--mute)">Ждём напарника…</div><div class="st">кинь ссылку ниже</div>`;
     el.appendChild(d);
   }
+  updateStartBtn();
   if (NET === 'p2p') {
     $('invUrl').textContent = lobby.url || 'комната создаётся…';
     $('lanHint').innerHTML = p2pRole === 'host'
@@ -322,13 +333,15 @@ let tGun = 0;
 
 function enterGame() {
   phase = 'game'; show(''); hudParts(true);
-  Object.assign(me, { p: V3(0, 0, 1.5), y: 0, vy: 0, yaw: 0, pitch: 0, seat: null, down: false, dead: false });
+  // старт — на станции, в центре миссий; на корабль попадаешь через шлюз
+  Object.assign(me, { p: V3(9.4, 0, 6.6 + Math.random() * 2.8), y: 0, vy: 0, yaw: Math.PI / 2, pitch: 0, seat: null, down: false, dead: false, vel: new THREE.Vector2() });
+  SH.doors.forEach(d => { d.t = 0; d.target = 0; d.phase = 'idle'; });
   SH.hull.visible = false;
   for (const m of [ENT, EPJ, LOOT, FIRES]) { for (const v of m.values()) removeObj(v); m.clear(); }
   for (const a of mates.values()) SH.inner.remove(a.group); mates.clear();
   PS.active = false; PS.thr = 0; PS.boost = 100;
   lockPointer();
-  toast('Вы на борту. Возьмите миссию в правом крыле станции', 'blue');
+  toast('Вы на станции «Улей-7». Возьмите миссию в терминале, откройте шлюз (E) и садитесь в корабль', 'blue');
   toast('Кликни по экрану, чтобы управлять', '');
 }
 function leaveGame() {
@@ -626,9 +639,44 @@ function updateFires(dt, t) {
   alarmT -= dt; if (any && !docked && alarmT <= 0) { alarmT = 2.2; sfx.alarm(); }
 }
 
+// ---------- шлюзы: выравнивание давления → створки → герметизация ----------
+const _dv = V3();
+function doorDist(d) { return camera.getWorldPosition(V3()).distanceTo(SH.group.localToWorld(V3(d.sx * 4.5, 1.4, 8))); }
+function updateDoors(dt, t) {
+  const dr = (snap && snap.dr) || [0, 0];
+  SH.doors.forEach((d, i) => {
+    const want = phase === 'game' ? dr[i] : 0;
+    if (want !== d.target) {
+      d.target = want; d.pt = 0;
+      const df = clamp(1 - doorDist(d) / 25, 0, 1);
+      if (want) { d.phase = 'vent'; sfx.airHiss(df); } else { d.phase = 'slide'; sfx.doorMotor(df); }
+    }
+    d.pt += dt;
+    if (d.phase === 'vent') { // давление выравнивается: пар из щелей, маячки крутятся
+      if (Math.random() < dt * 90) {
+        const v = d.vents[Math.floor(Math.random() * d.vents.length)];
+        const lp = d.g.position.clone().add(v), sgn = Math.sign(v.x) || 1;
+        for (let k = 0; k < 2; k++) fxSN.emit(lp.x, lp.y, lp.z, sgn * (1.5 + Math.random() * 2.5), (Math.random() - 0.3) * 1.5, (Math.random() - 0.5) * 2, new THREE.Color(0.9, 0.93, 0.97), 1.2, 0.18, 4, 1.2);
+      }
+      if (d.pt > 0.9) { d.phase = 'slide'; d.pt = 0; sfx.doorMotor(clamp(1 - doorDist(d) / 25, 0, 1)); }
+    } else if (d.phase === 'slide') {
+      const dir = d.target ? 1 : -1;
+      d.t = clamp(d.t + dir * dt / 1.0, 0, 1);
+      if ((dir > 0 && d.t >= 1) || (dir < 0 && d.t <= 0)) { d.phase = 'idle'; sfx.clunk(clamp(1 - doorDist(d) / 25, 0, 1)); if (dir < 0) for (let k = 0; k < 14; k++) fxSN.emit(d.g.position.x, 0.2 + Math.random() * 2.4, 8, (Math.random() - 0.5) * 2, 0, (Math.random() - 0.5) * 0.5, new THREE.Color(0.8, 0.82, 0.86), 0.7, 0.12, 3, 3); }
+    }
+    const e = d.t < 0.5 ? 2 * d.t * d.t : 1 - Math.pow(-2 * d.t + 2, 2) / 2; // плавный старт и торможение
+    d.panels[0].position.z = -0.4 - e * 0.85; d.panels[1].position.z = 0.4 + e * 0.85;
+    const busy = d.phase !== 'idle';
+    d.lampMat.color.set(busy ? 0xffb020 : d.t > 0.5 ? 0x7dffb0 : 0xff3b4f); d.lampMat.emissive.copy(d.lampMat.color);
+    d.lampMat.emissiveIntensity = busy ? 1.5 + Math.sin(t * 20) * 1.2 : 1.8;
+    for (const b of d.beacons) { b.b.rotation.y += dt * (busy ? 9 : 0); b.beam.material.opacity = busy ? 0.35 : 0; b.dome.material.emissiveIntensity = busy ? 2.2 : 0.3; }
+  });
+}
+
 // ---------- ходьба ----------
 function walkable(x, z) {
-  const rects = docked ? WALK.concat(WALK_DOCK) : WALK;
+  let rects = docked ? WALK.concat(WALK_HALLS) : WALK;
+  if (docked) SH.doors.forEach((d, i) => { if (d.t > 0.85) rects = rects.concat([WALK_DOOR[i]]); }); // в проём — только когда створки разъехались
   let ok = false;
   for (const r of rects) if (x >= r[0] && x <= r[1] && z >= r[2] && z <= r[3]) { ok = true; break; }
   if (!ok) return false;
@@ -675,7 +723,15 @@ function findInteract() {
   const taken = s => mateList().some(m => m.st && m.st.s === s);
   for (const k in SEATS) { const s = SEATS[k]; if (Math.hypot(s.p[0] - px, s.p[2] - pz) < 1.7) return taken(k) ? { kind: 'none', text: 'Место занято напарником' } : { kind: 'sit', seat: k, text: '<kbd>E</kbd>' + s.label }; }
   if (docked) for (const t of TERMINALS) if (Math.hypot(t.p[0] - px, t.p[2] - pz) < 2.3) return { kind: 'term', id: t.id, text: '<kbd>E</kbd>' + t.label };
-  if (docked && Math.abs(pz - 8) < 1.2 && Math.abs(px) > 2.2 && Math.abs(px) < 3.6) return { kind: 'none', text: 'Шлюз открыт → станция' };
+  // шлюзы: открыть/закрыть с обеих сторон двери
+  for (let i = 0; i < SH.doors.length; i++) {
+    const d = SH.doors[i], dx = px - d.sx * 4.5, dz = pz - 8;
+    if (Math.hypot(dx, dz) < 1.9) {
+      if (!docked) return { kind: 'none', text: 'Шлюз заблокирован — за бортом вакуум' };
+      if (d.phase !== 'idle') return { kind: 'none', text: d.phase === 'vent' ? 'Выравнивание давления…' : 'Створки движутся…' };
+      return { kind: 'door', i, text: '<kbd>E</kbd>' + (d.target ? 'закрыть шлюз' : 'открыть шлюз') };
+    }
+  }
   return null;
 }
 function onUse() {
@@ -683,6 +739,7 @@ function onUse() {
   if (a.kind === 'stand') { send({ t: 'stand' }); me.seatLock = now() + 0.6; setSeat(null); }
   else if (a.kind === 'sit') { send({ t: 'sit', s: a.seat }); me.seatLock = now() + 0.6; setSeat(a.seat); }
   else if (a.kind === 'term') openPanel(a.id);
+  else if (a.kind === 'door') send({ t: 'door', i: a.i });
 }
 function updateInteract(dt) {
   promptAct = findInteract();
@@ -870,12 +927,14 @@ function menuFrame(dt, t) {
   menuT += dt;
   SH.hull.visible = true; SH.halls.visible = false; vm.group.visible = false; station.cradles.visible = false;
   SH.group.position.lerp(DOCK_P.clone().add(V3(0, Math.sin(t * 0.6) * 0.4, 0)), 0.1); SH.group.quaternion.set(0, 1, 0, 0);
-  const a = menuT * 0.08;
-  camera.position.set(Math.sin(a) * 30 - 6, 7 + Math.sin(menuT * 0.13) * 3, Math.cos(a) * 30 + 2);
-  camera.lookAt(SH.group.localToWorld(V3(-4, 1, -2)));
+  // кинематографичный кадр: 3/4 спереди, медленный облёт, корабль справа от меню
+  const a = -2.45 + Math.sin(menuT * 0.045) * 0.42;
+  const dist = 25 + Math.sin(menuT * 0.07) * 2;
+  camera.position.set(Math.sin(a) * dist, 4.5 + Math.sin(menuT * 0.09) * 1.5, Math.cos(a) * dist + 1);
+  camera.lookAt(SH.group.localToWorld(V3(0, 0.6, 0.5)));
+  camera.rotateY(innerWidth > 900 ? 0.26 : 0); camera.rotateZ(Math.sin(menuT * 0.06) * 0.03);
   const co = window.__camOverride; if (co) { camera.position.set(...co.p); camera.lookAt(SH.group.localToWorld(V3(...co.l))); }
   updateEngines(window.__engPow ?? 0.32, window.__engBoost ?? 0, t, dt);
-  SH.outerDoors.forEach(d => d.position.z = 8);
   setEngine(0, false, false);
 }
 function gameFrame(dt, t) {
@@ -902,7 +961,7 @@ function gameFrame(dt, t) {
   CI.eb = (CI.eb || 0) + (engBoost - (CI.eb || 0)) * Math.min(1, dt * 5);
   updateEngines(engPow, CI.eb, t, dt);
   if (!docked) emitExhaust(engPow, CI.eb > 0.5, dt);
-  SH.hallLights.forEach(l => l.intensity = docked ? 6 : 0);
+  SH.hallLights.forEach(l => l.intensity = docked ? 3.5 : 0);
   setEngine(Math.min(1, thr), PS.boosting, !docked);
   // локальный игрок
   if (!me.seat && !me.down && !me.dead && !panelOpen) updateWalk(dt); else me.moving = false;
@@ -944,7 +1003,8 @@ function gameFrame(dt, t) {
     camera.rotation.set(me.pitch + CI.pit - me.land * 0.06, me.yaw, CI.roll + sway * 0.4 - (me.vel ? (me.vel.x * Math.cos(me.yaw) - me.vel.y * Math.sin(me.yaw)) * 0.006 : 0));
     vm.group.position.set(sway + Math.cos(t * 1.6) * 0.004, bob * 0.5 + Math.sin(t * 1.6) * 0.004 + (me.tool ? 0.04 : 0) - me.land * 0.05 + CI.oy * 0.3, (me.tool ? -0.05 : 0) - CI.oz * 0.3);
     vm.group.rotation.set(CI.pit * 0.5, 0, CI.roll * 0.5);
-    vm.r.rotation.x = me.tool ? -0.15 + Math.sin(t * 40) * 0.01 : 0;
+    vm.r.rotation.x = me.tool ? -0.12 + Math.sin(t * 40) * 0.012 : 0; vm.r.position.z = -0.5 + (me.tool ? 0.02 + Math.random() * 0.006 : 0);
+    vm.trigger.rotation.x = me.tool ? 0.65 : 0.3; vm.tip.material.emissiveIntensity = me.tool ? 3 + Math.sin(t * 30) * 1.2 : 1.4; vm.coils.forEach((c, i) => c.rotation.z = t * (me.tool ? 12 : 1) * (i % 2 ? -1 : 1));
     vm.tip.scale.setScalar(me.tool ? 1.5 + Math.random() * 0.4 : 1);
   }
   // FOV и эффекты скорости
@@ -969,7 +1029,8 @@ function gameFrame(dt, t) {
   // рычаг тяги в кабине
   if (SH.throttle) SH.throttle.rotation.x = -0.6 + Math.max(0, PS.active ? PS.thr : 0) * 1.1;
   // шлюзы
-  SH.outerDoors.forEach(d => { const want = docked ? 9.75 : 8; d.position.z += (want - d.position.z) * Math.min(1, dt * 3); });
+  updateDoors(dt, t);
+  for (const id in SH.terminals) SH.terminals[id].holo.rotation.y += dt * 1.2;
   // напарник
   for (const a of mates.values()) {
     const st = a.st; if (!st) continue;
@@ -1007,7 +1068,7 @@ function gameFrame(dt, t) {
 }
 
 // ---------- старт ----------
-window.__g = { me, PS, send, SH, keys, stick, mouse, ENT };
+window.__g = { me, PS, send, SH, keys, stick, mouse, ENT, tick: (n = 1, dt = 0.05) => { for (let i = 0; i < n; i++) { if (phase === "game") gameFrame(dt, now()); } } };
 // прогрев: всё, что может появиться в бою, компилируется сейчас, а не посреди перестрелки (иначе фризы)
 function prewarm() {
   const tmp = [], base = camera.getWorldPosition(V3()).add(V3(0, 0, -60));
