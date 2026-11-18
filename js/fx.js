@@ -1,13 +1,171 @@
 // Визуальные улучшения: пост-обработка, процедурные текстуры, окружение, обломки, вспышки
 import * as THREE from 'three';
-import { Lensflare, LensflareElement } from 'three/addons/objects/Lensflare.js';
+
+// ---------- шумы для шейдеров ----------
+const NOISE_GLSL = `
+float hash3(vec3 p){ p = fract(p*0.3183099 + 0.1); p *= 17.0; return fract(p.x*p.y*p.z*(p.x+p.y+p.z)); }
+float vnoise(vec3 x){ vec3 i = floor(x), f = fract(x); f = f*f*(3.0-2.0*f);
+  return mix(mix(mix(hash3(i+vec3(0,0,0)),hash3(i+vec3(1,0,0)),f.x), mix(hash3(i+vec3(0,1,0)),hash3(i+vec3(1,1,0)),f.x),f.y),
+             mix(mix(hash3(i+vec3(0,0,1)),hash3(i+vec3(1,0,1)),f.x), mix(hash3(i+vec3(0,1,1)),hash3(i+vec3(1,1,1)),f.x),f.y), f.z); }
+float fbm(vec3 p){ float a = 0.5, s = 0.0; for (int i = 0; i < 6; i++){ s += a*vnoise(p); p = p*2.03 + vec3(1.7,9.2,3.1); a *= 0.5; } return s; }
+`;
+// рендер процедурной текстуры на видеокарте (equirect: u — долгота, v — широта)
+function gpuTex(renderer, w, h, frag, mapping) {
+  const rt = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter, magFilter: THREE.LinearFilter, wrapS: THREE.RepeatWrapping });
+  const mat = new THREE.ShaderMaterial({ vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }', fragmentShader: NOISE_GLSL + frag, depthTest: false, depthWrite: false });
+  const sc = new THREE.Scene(); sc.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat));
+  const prev = renderer.getRenderTarget(); renderer.setRenderTarget(rt); renderer.render(sc, new THREE.Camera()); renderer.setRenderTarget(prev);
+  mat.dispose(); rt.texture.mapping = mapping || THREE.UVMapping;
+  return rt.texture;
+}
+export const SUN_DIR = new THREE.Vector3(0.7, 0.45, 0.55).normalize();
+
+// ---------- небо: туманности, пылевые рукава, звёздная пыль, свечение у солнца ----------
+export function makeSky(renderer) {
+  return gpuTex(renderer, 2048, 1024, `
+    varying vec2 vUv; uniform float dummy;
+    void main(){
+      float lon = (vUv.x - 0.5) * 6.2831853, lat = (vUv.y - 0.5) * 3.1415926;
+      vec3 d = vec3(cos(lat)*cos(lon), sin(lat), cos(lat)*sin(lon));
+      vec3 sd = normalize(vec3(0.7,0.45,0.55));
+      float warp = fbm(d*1.6 + 4.0);
+      float n1 = fbm(d*2.2 + warp*1.4);
+      float n2 = fbm(d*3.7 - warp*0.9 + 12.0);
+      float dust = smoothstep(0.45, 0.75, fbm(d*5.0 + n1*2.0 + 30.0));
+      float band = exp(-pow(dot(d, normalize(vec3(0.2,1.0,-0.35)))*2.4, 2.0)); // «млечный путь»
+      vec3 col = vec3(0.012, 0.010, 0.03);
+      col += vec3(0.32,0.10,0.55) * pow(n1, 2.4) * 1.6;
+      col += vec3(0.95,0.22,0.48) * pow(smoothstep(0.38,0.85,n2), 2.0) * 1.1;
+      col += vec3(0.10,0.55,0.75) * pow(smoothstep(0.45,0.9,fbm(d*2.8+40.0)), 2.2) * 1.2;
+      col += vec3(0.9,0.55,0.3) * band * pow(n1, 3.0) * 1.4;
+      col *= 1.0 - dust * 0.75;
+      float sp = hash3(floor(d*900.0)); col += vec3(1.0,0.95,0.9) * step(0.9985, sp) * 0.9 * (0.4 + band);
+      float sp2 = hash3(floor(d*2400.0)+7.0); col += vec3(0.8,0.85,1.0) * step(0.9993, sp2) * 0.6;
+      float s = max(dot(d, sd), 0.0); col += vec3(1.0,0.82,0.6) * (pow(s, 600.0)*30.0 + pow(s, 40.0)*0.6 + pow(s, 6.0)*0.08);
+      gl_FragColor = vec4(col, 1.0);
+    }`, THREE.EquirectangularReflectionMapping);
+}
+// окружение для отражений = то же небо, свёрнутое в PMREM
+export function makeSpaceEnvFrom(renderer, sky) { const pm = new THREE.PMREMGenerator(renderer); const env = pm.fromEquirectangular(sky).texture; pm.dispose(); return env; }
+
+// ---------- планета-газовый гигант с бурями ----------
+export function makePlanetTex(renderer) {
+  return gpuTex(renderer, 2048, 1024, `
+    varying vec2 vUv;
+    void main(){
+      float phi = vUv.x * 6.2831853, th = (1.0 - vUv.y) * 3.1415926;
+      vec3 d = vec3(-cos(phi)*sin(th), cos(th), sin(phi)*sin(th));
+      float w = fbm(d*3.0) * 1.2;
+      float lat = d.y + (w - 0.6) * 0.18 + fbm(d*9.0)*0.04;
+      float bands = sin(lat * 22.0) * 0.5 + 0.5;
+      float fine = sin(lat * 70.0 + fbm(d*6.0)*4.0) * 0.5 + 0.5;
+      vec3 c1 = vec3(0.92,0.62,0.45), c2 = vec3(0.55,0.28,0.42), c3 = vec3(0.98,0.86,0.72), c4 = vec3(0.30,0.16,0.35);
+      vec3 col = mix(c2, c1, bands); col = mix(col, c3, smoothstep(0.6, 1.0, fine) * 0.45); col = mix(col, c4, smoothstep(0.75, 1.0, abs(d.y)) * 0.7);
+      // большое штормовое пятно
+      vec3 sc = normalize(vec3(0.6, -0.25, 0.75)); float sdist = distance(d, sc);
+      float storm = smoothstep(0.32, 0.0, sdist); float swirl = sin(sdist * 60.0 - fbm(d*12.0)*6.0) * 0.5 + 0.5;
+      col = mix(col, mix(vec3(0.85,0.32,0.22), vec3(1.0,0.75,0.55), swirl), storm * 0.85);
+      gl_FragColor = vec4(col * 0.85, 1.0);
+    }`);
+}
+// луна: серый камень, моря и кратеры
+export function makeMoonTex(renderer) {
+  return gpuTex(renderer, 1024, 512, `
+    varying vec2 vUv;
+    float crater(vec3 d, vec3 c, float r){ float x = distance(d, c) / r; return x < 1.0 ? (smoothstep(0.7, 1.0, x) * 0.5 - (1.0 - x) * 0.35) : 0.0; }
+    void main(){
+      float phi = vUv.x * 6.2831853, th = (1.0 - vUv.y) * 3.1415926;
+      vec3 d = vec3(-cos(phi)*sin(th), cos(th), sin(phi)*sin(th));
+      float n = fbm(d*4.0), maria = smoothstep(0.5, 0.62, fbm(d*1.5 + 3.0));
+      float c = 0.0;
+      for (int i = 0; i < 24; i++){ vec3 cc = normalize(vec3(hash3(vec3(float(i),1.,2.))-0.5, hash3(vec3(float(i),3.,4.))-0.5, hash3(vec3(float(i),5.,6.))-0.5)); c += crater(d, cc, 0.05 + 0.18*hash3(vec3(float(i),7.,8.))); }
+      vec3 col = vec3(0.62,0.6,0.64) * (0.7 + n*0.5) - maria*0.22 + c*0.35;
+      gl_FragColor = vec4(col, 1.0);
+    }`);
+}
+// кольца планеты (радиальная текстура с прозрачностью)
+export function makeRings(inner, outer) {
+  const c = cv(1024, 8, (x, w) => {
+    for (let i = 0; i < w; i++) { const t = i / w; const n = 0.5 + 0.5 * Math.sin(t * 90) * Math.sin(t * 23 + 1) + (Math.random() - 0.5) * 0.3;
+      const gap = (t > 0.55 && t < 0.6) || (t > 0.82 && t < 0.84) ? 0.08 : 1; const a = Math.max(0, Math.min(1, n * gap * (0.35 + 0.65 * Math.sin(t * Math.PI))));
+      x.fillStyle = `rgba(${220 + n * 30 | 0},${180 + n * 40 | 0},${150 + n * 50 | 0},${a})`; x.fillRect(i, 0, 1, 8); }
+  });
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+  const g = new THREE.RingGeometry(inner, outer, 180, 2), p = g.attributes.position, uv = g.attributes.uv;
+  for (let i = 0; i < p.count; i++) { const r = Math.hypot(p.getX(i), p.getY(i)); uv.setXY(i, (r - inner) / (outer - inner), 0.5); }
+  return new THREE.Mesh(g, new THREE.MeshStandardMaterial({ map: tex, transparent: true, side: THREE.DoubleSide, depthWrite: false, roughness: 0.9 }));
+}
+
+// ---------- факел двигателя: рваное пламя, ударные «алмазы», раскалённое ядро ----------
+export function makePlume(r, len, outerCol, coreCol, seed = 0) {
+  const geo = new THREE.CylinderGeometry(r, r * 0.08, 1, 40, 24, true); geo.translate(0, -0.5, 0); geo.rotateX(-Math.PI / 2); // сопло z=0 → хвост z=+1
+  const uniforms = { uTime: { value: 0 }, uPower: { value: 0 }, uBoost: { value: 0 }, uColA: { value: new THREE.Color(coreCol) }, uColB: { value: new THREE.Color(outerCol) }, uSeed: { value: seed } };
+  const mat = new THREE.ShaderMaterial({
+    uniforms, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, toneMapped: false,
+    vertexShader: `#include <common>
+      #include <logdepthbuf_pars_vertex>
+      varying vec2 vUv; varying vec3 vN; varying vec3 vV;
+      void main(){ vUv = uv; vec4 mv = modelViewMatrix * vec4(position, 1.0); vN = normalize(normalMatrix * normal); vV = normalize(-mv.xyz); gl_Position = projectionMatrix * mv;
+      #include <logdepthbuf_vertex>
+      }`,
+    fragmentShader: NOISE_GLSL + `#include <common>
+      #include <logdepthbuf_pars_fragment>
+      uniform float uTime, uPower, uBoost, uSeed; uniform vec3 uColA, uColB; varying vec2 vUv; varying vec3 vN; varying vec3 vV;
+      void main(){
+        #include <logdepthbuf_fragment>
+        float t = 1.0 - vUv.y;
+        float face = clamp(abs(dot(normalize(vN), normalize(vV))), 0.0, 1.0);
+        float core = pow(face, 1.6);
+        float ang = vUv.x * 6.2831853;
+        float n = vnoise(vec3(cos(ang)*2.0, sin(ang)*2.0, t*6.0 - uTime*14.0 + uSeed)) * 0.65 + vnoise(vec3(cos(ang)*5.0, sin(ang)*5.0, t*14.0 - uTime*26.0)) * 0.35;
+        float fall = pow(max(1.0 - t, 0.0), 1.4 + (1.0 - uBoost) * 0.6);
+        float diam = pow(0.5 + 0.5 * cos(t * (34.0 - uBoost * 10.0) - uTime * 3.0), 8.0) * smoothstep(0.03, 0.12, t) * (1.0 - t);
+        float I = (fall * core * (0.45 + 0.75 * n) + diam * core * (0.7 + uBoost)) * uPower;
+        vec3 col = mix(uColB, uColA, clamp(pow(max(1.0 - t, 0.0), 2.5) * core * 1.3, 0.0, 1.0));
+        col = mix(col, vec3(1.0, 0.75, 1.0), uBoost * 0.35 * (1.0 - t));
+        gl_FragColor = vec4(col * I * 1.25, 1.0);
+      }`,
+  });
+  const m = new THREE.Mesh(geo, mat); m.scale.set(1, 1, len); m.frustumCulled = false; m.userData.baseLen = len;
+  return m;
+}
+
+// ---------- солнце и блики (без чтения кадра — никаких чёрных квадратов) ----------
+const radial = (stops) => { const c = cv(256, 256, (x, w) => { const g = x.createRadialGradient(w / 2, w / 2, 0, w / 2, w / 2, w / 2); stops.forEach(([o, col]) => g.addColorStop(o, col)); x.fillStyle = g; x.fillRect(0, 0, w, w); }); return new THREE.CanvasTexture(c); };
+export class SunFlare {
+  constructor(scene, camera) {
+    this.sun = new THREE.Sprite(new THREE.SpriteMaterial({ map: radial([[0, 'rgba(255,255,255,1)'], [0.12, 'rgba(255,245,225,1)'], [0.3, 'rgba(255,200,140,.35)'], [1, 'rgba(255,160,90,0)']]), color: new THREE.Color(3, 2.7, 2.3), blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, fog: false }));
+    this.sun.scale.setScalar(1500); scene.add(this.sun);
+    const ring = radial([[0, 'rgba(255,255,255,0)'], [0.62, 'rgba(255,255,255,0)'], [0.75, 'rgba(255,255,255,.5)'], [0.85, 'rgba(255,255,255,0)']]);
+    const blob = radial([[0, 'rgba(255,255,255,.7)'], [1, 'rgba(255,255,255,0)']]);
+    this.ghosts = [[0.35, 0.09, blob, 0x8fd0ff], [0.6, 0.05, blob, 0xffa0d0], [0.85, 0.16, ring, 0xa0ffd8], [1.15, 0.06, blob, 0xffd090], [1.5, 0.22, ring, 0xb0b0ff], [-0.2, 0.04, blob, 0xffffff]].map(([k, s, map, col]) => {
+      const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map, color: col, blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false, transparent: true, opacity: 0, toneMapped: false }));
+      sp.userData = { k, s }; sp.renderOrder = 999; camera.add(sp); return sp;
+    });
+    this.streak = new THREE.Sprite(new THREE.SpriteMaterial({ map: radial([[0, 'rgba(255,255,255,.9)'], [0.5, 'rgba(160,210,255,.25)'], [1, 'rgba(255,255,255,0)']]), color: 0xbfe0ff, blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false, transparent: true, opacity: 0, toneMapped: false }));
+    this.streak.renderOrder = 999; camera.add(this.streak);
+  }
+  update(camera, visibleK) {
+    const cw = camera.getWorldPosition(new THREE.Vector3());
+    this.sun.position.copy(cw).addScaledVector(SUN_DIR, 9000);
+    const ndc = this.sun.position.clone().project(camera);
+    const on = ndc.z < 1 && Math.abs(ndc.x) < 1.2 && Math.abs(ndc.y) < 1.2;
+    const k = on ? visibleK * Math.max(0, 1 - Math.hypot(ndc.x, ndc.y) / 1.5) : 0;
+    const h = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2), w = h * camera.aspect;
+    for (const g of this.ghosts) {
+      const { k: f, s } = g.userData; const x = ndc.x * (1 - f * 2), y = ndc.y * (1 - f * 2);
+      g.position.set(x * w / 2, y * h / 2, -1); g.scale.setScalar(s * h); g.material.opacity = k * 0.55;
+    }
+    this.streak.position.set(ndc.x * w / 2, ndc.y * h / 2, -1); this.streak.scale.set(w * 0.9 * k + 0.001, h * 0.012, 1); this.streak.material.opacity = k * 0.6;
+  }
+}
 
 const cv = (w, h, draw) => { const c = document.createElement('canvas'); c.width = w; c.height = h; draw(c.getContext('2d'), w, h); return c; };
 const rnd = (a, b) => a + Math.random() * (b - a);
 
 // ---------- финальный проход: хроматическая аберрация, радиальное размытие, виньетка, зерно ----------
 export const FinalShader = {
-  uniforms: { tDiffuse: { value: null }, uTime: { value: 0 }, uCA: { value: 0.0015 }, uSpeed: { value: 0 }, uVig: { value: 0.32 }, uGrain: { value: 0.035 }, uHurt: { value: 0 } },
+  uniforms: { tDiffuse: { value: null }, uTime: { value: 0 }, uCA: { value: 0.0015 }, uSpeed: { value: 0 }, uVig: { value: 0.32 }, uGrain: { value: 0.0 }, uHurt: { value: 0 } },
   vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.); }',
   fragmentShader: `
     uniform sampler2D tDiffuse; uniform float uTime, uCA, uSpeed, uVig, uGrain, uHurt; varying vec2 vUv;
@@ -83,21 +241,6 @@ export function floorTextures() {
     x.strokeStyle = bump ? '#404040' : 'rgba(255,200,80,.25)'; x.lineWidth = 3; x.strokeRect(2, 2, w - 4, h - 4);
   });
   return { map: Object.assign(tex(draw(false), 2), { colorSpace: THREE.SRGBColorSpace }), bump: tex(draw(true), 2) };
-}
-
-// ---------- блик солнца ----------
-export function sunFlare(pos) {
-  const glow = cv(256, 256, (x, w) => { const g = x.createRadialGradient(w / 2, w / 2, 0, w / 2, w / 2, w / 2); g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.15, 'rgba(255,240,210,.7)'); g.addColorStop(1, 'rgba(255,200,150,0)'); x.fillStyle = g; x.fillRect(0, 0, w, w); });
-  const ring = cv(128, 128, (x, w) => { const g = x.createRadialGradient(w / 2, w / 2, w * 0.3, w / 2, w / 2, w / 2); g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(0.7, 'rgba(160,220,255,.35)'); g.addColorStop(1, 'rgba(255,255,255,0)'); x.fillStyle = g; x.fillRect(0, 0, w, w); });
-  const tg = new THREE.CanvasTexture(glow), tr = new THREE.CanvasTexture(ring);
-  const lf = new Lensflare();
-  lf.addElement(new LensflareElement(tg, 700, 0, new THREE.Color(0xfff2dc)));
-  lf.addElement(new LensflareElement(tr, 90, 0.5, new THREE.Color(0x9fd8ff)));
-  lf.addElement(new LensflareElement(tr, 160, 0.75, new THREE.Color(0xffb0e0)));
-  lf.addElement(new LensflareElement(tg, 50, 0.9, new THREE.Color(0x8ffcff)));
-  lf.addElement(new LensflareElement(tr, 260, 1.05, new THREE.Color(0xffd0a0)));
-  const l = new THREE.PointLight(0xffffff, 0, 1); l.position.copy(pos); l.add(lf);
-  return l;
 }
 
 // ---------- обломки тварей (настоящие кусочки с физикой) ----------

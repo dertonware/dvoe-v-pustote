@@ -17,7 +17,7 @@ function slime(color, rim = 0x7dffb0, o = {}) {
   const m = new THREE.MeshPhysicalMaterial(Object.assign({ color, map: skinTex.map, bumpMap: skinTex.bump, bumpScale: 2, roughness: 0.42, clearcoat: 1, clearcoatRoughness: 0.18, sheen: 0.8, sheenColor: new THREE.Color(rim).multiplyScalar(0.6), sheenRoughness: 0.4 }, o));
   m.onBeforeCompile = sh => {
     sh.uniforms.uRim = { value: new THREE.Color(rim) };
-    sh.fragmentShader = 'uniform vec3 uRim;\n' + sh.fragmentShader.replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\nfloat rimF = pow(1.0 - abs(dot(normalize(vNormal), normalize(vViewPosition))), 3.0);\ntotalEmissiveRadiance += uRim * rimF * 1.1;');
+    sh.fragmentShader = 'uniform vec3 uRim;\n' + sh.fragmentShader.replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\nfloat rimF = pow(clamp(1.0 - abs(dot(normalize(vNormal), normalize(vViewPosition))), 0.0, 1.0), 3.0);\ntotalEmissiveRadiance += uRim * rimF * 1.1;');
   };
   return m;
 }
